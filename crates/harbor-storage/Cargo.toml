@@ -1,0 +1,19 @@
+[package]
+name = "harbor-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio.workspace = true
+object_store.workspace = true
+bytes.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+uuid.workspace = true
+tokio-util = { version = "0.7", features = ["io"] }

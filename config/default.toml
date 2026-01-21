@@ -1,0 +1,56 @@
+# Harbor Cache Configuration
+
+[server]
+bind_address = "0.0.0.0"
+port = 5000
+
+[cache]
+# Maximum cache size in bytes (10 GB)
+max_size = 10737418240
+# Number of days to retain cached artifacts
+retention_days = 30
+# Eviction policy: "lru", "lfu", or "fifo"
+eviction_policy = "lru"
+
+[upstream]
+# URL of the upstream Harbor registry
+url = "http://localhost:8880"
+# Registry/project name to proxy
+registry = "library"
+# Skip TLS certificate verification (for self-signed certs)
+skip_tls_verify = true
+# Credentials for upstream authentication
+username = "admin"
+password = "Harbor12345"
+
+[storage]
+# Storage backend: "local" or "s3"
+backend = "local"
+
+[storage.local]
+# Path for local cache storage
+path = "./data/cache"
+
+[storage.s3]
+# S3 configuration (used when backend = "s3")
+# bucket = "harbor-cache"
+# region = "us-east-1"
+# endpoint = "http://localhost:9000"  # For MinIO
+# access_key = ""
+# secret_key = ""
+
+[database]
+# SQLite database path
+path = "./data/harbor-cache.db"
+
+[auth]
+# JWT secret for token signing (change in production!)
+jwt_secret = "change-me-in-production"
+# Enable authentication
+enabled = true
+
+[logging]
+# Log level: "trace", "debug", "info", "warn", "error"
+level = "info"
+# Log format: "pretty" or "json"
+format = "pretty"

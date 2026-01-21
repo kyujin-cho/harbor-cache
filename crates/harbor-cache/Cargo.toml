@@ -1,0 +1,29 @@
+[package]
+name = "harbor-cache"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "harbor-cache"
+path = "src/main.rs"
+
+[dependencies]
+harbor-core.workspace = true
+harbor-db.workspace = true
+harbor-api.workspace = true
+harbor-auth.workspace = true
+harbor-storage.workspace = true
+harbor-proxy.workspace = true
+tokio.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+clap.workspace = true
+config.workspace = true
+serde.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true

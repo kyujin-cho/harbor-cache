@@ -1,0 +1,23 @@
+[package]
+name = "harbor-api"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+harbor-core.workspace = true
+harbor-db.workspace = true
+harbor-auth.workspace = true
+harbor-storage.workspace = true
+axum.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+bytes.workspace = true
+futures.workspace = true

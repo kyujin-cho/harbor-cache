@@ -1,0 +1,21 @@
+[package]
+name = "harbor-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+harbor-db.workspace = true
+harbor-storage.workspace = true
+harbor-proxy.workspace = true
+tokio.workspace = true
+serde.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+bytes.workspace = true
+futures.workspace = true
+uuid.workspace = true
