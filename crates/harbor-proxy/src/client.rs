@@ -37,7 +37,6 @@ struct TokenResponse {
 pub struct HarborClient {
     config: HarborClientConfig,
     client: Client,
-    token: Arc<RwLock<Option<String>>>,
 }
 
 impl HarborClient {
@@ -53,11 +52,7 @@ impl HarborClient {
 
         info!("Created Harbor client for {}", config.url);
 
-        Ok(Self {
-            config,
-            client,
-            token: Arc::new(RwLock::new(None)),
-        })
+        Ok(Self { config, client })
     }
 
     /// Get the registry URL for OCI operations
@@ -66,48 +61,16 @@ impl HarborClient {
         format!("{}/v2/{}", self.config.url, self.config.registry)
     }
 
-    /// Authenticate with Harbor and get a token
-    async fn authenticate(&self) -> Result<String, ProxyError> {
-        info!("Authenticating with Harbor at {}", self.config.url);
-
-        // Try to get the token endpoint from the API
-        let response = self.client.get(format!("{}/v2/", self.config.url)).send().await?;
-
-        if response.status() == StatusCode::UNAUTHORIZED {
-            // Parse WWW-Authenticate header to get token endpoint
-            if let Some(auth_header) = response.headers().get("www-authenticate") {
-                if let Ok(header_str) = auth_header.to_str() {
-                    if let Some(token) = self.fetch_token_from_auth_header(header_str).await? {
-                        return Ok(token);
-                    }
-                }
-            }
-        }
-
-        // Fall back to basic auth if no token endpoint
-        if let (Some(username), Some(password)) = (&self.config.username, &self.config.password) {
-            // Use basic auth directly
-            debug!("Using basic auth for Harbor");
-            return Ok(format!(
-                "Basic {}",
-                base64_encode(&format!("{}:{}", username, password))
+    /// Parse WWW-Authenticate header and fetch token with proper scope
+    async fn fetch_token_for_scope(&self, www_auth: &str) -> Result<String, ProxyError> {
+        // Parse: Bearer realm="https://...",service="harbor-registry",scope="..."
+        if !www_auth.starts_with("Bearer ") {
+            return Err(ProxyError::InvalidResponse(
+                "Expected Bearer authentication".to_string(),
             ));
         }
 
-        Err(ProxyError::Unauthorized)
-    }
-
-    /// Parse WWW-Authenticate header and fetch token
-    async fn fetch_token_from_auth_header(
-        &self,
-        header: &str,
-    ) -> Result<Option<String>, ProxyError> {
-        // Parse: Bearer realm="https://...",service="harbor-registry",scope="..."
-        if !header.starts_with("Bearer ") {
-            return Ok(None);
-        }
-
-        let parts: Vec<&str> = header[7..].split(',').collect();
+        let parts: Vec<&str> = www_auth[7..].split(',').collect();
         let mut realm = None;
         let mut service = None;
         let mut scope = None;
@@ -157,58 +120,75 @@ impl HarborClient {
         let response = request.send().await?;
 
         if !response.status().is_success() {
-            return Err(ProxyError::TokenRefreshFailed);
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(ProxyError::UpstreamError {
+                status: status.as_u16(),
+                message: format!("Token request failed: {}", body),
+            });
         }
 
         let token_response: TokenResponse = response.json().await?;
 
-        Ok(Some(format!("Bearer {}", token_response.token)))
+        Ok(format!("Bearer {}", token_response.token))
     }
 
-    /// Get authentication header, refreshing token if needed
-    async fn get_auth_header(&self) -> Result<Option<String>, ProxyError> {
-        // Check if we have a cached token
-        {
-            let token = self.token.read().await;
-            if let Some(ref t) = *token {
-                return Ok(Some(t.clone()));
-            }
+    /// Make an authenticated request, handling 401 by getting a properly scoped token
+    async fn authenticated_request(
+        &self,
+        method: &str,
+        url: &str,
+        headers: Vec<(&str, &str)>,
+        body: Option<Bytes>,
+    ) -> Result<Response, ProxyError> {
+        // First attempt without token
+        let mut request = match method {
+            "GET" => self.client.get(url),
+            "HEAD" => self.client.head(url),
+            "PUT" => self.client.put(url),
+            "POST" => self.client.post(url),
+            _ => self.client.get(url),
+        };
+
+        for (key, value) in &headers {
+            request = request.header(*key, *value);
         }
 
-        // Authenticate and cache token
-        let token = self.authenticate().await?;
-        {
-            let mut cached = self.token.write().await;
-            *cached = Some(token.clone());
-        }
-
-        Ok(Some(token))
-    }
-
-    /// Make an authenticated request
-    async fn request(&self, url: &str) -> Result<Response, ProxyError> {
-        let mut request = self.client.get(url);
-
-        if let Some(auth) = self.get_auth_header().await? {
-            request = request.header("Authorization", auth);
+        if let Some(ref data) = body {
+            request = request.body(data.clone());
         }
 
         let response = request.send().await?;
 
-        // If unauthorized, try refreshing token
+        // If unauthorized, get a token with the proper scope and retry
         if response.status() == StatusCode::UNAUTHORIZED {
-            debug!("Token expired, refreshing...");
+            let www_auth = response
+                .headers()
+                .get("www-authenticate")
+                .and_then(|h| h.to_str().ok())
+                .ok_or(ProxyError::Unauthorized)?;
 
-            // Clear cached token
-            {
-                let mut cached = self.token.write().await;
-                *cached = None;
+            debug!("Got 401, fetching token with scope from: {}", www_auth);
+
+            let token = self.fetch_token_for_scope(www_auth).await?;
+
+            // Retry with token
+            let mut request = match method {
+                "GET" => self.client.get(url),
+                "HEAD" => self.client.head(url),
+                "PUT" => self.client.put(url),
+                "POST" => self.client.post(url),
+                _ => self.client.get(url),
+            };
+
+            request = request.header("Authorization", &token);
+
+            for (key, value) in &headers {
+                request = request.header(*key, *value);
             }
 
-            // Retry with new token
-            let mut request = self.client.get(url);
-            if let Some(auth) = self.get_auth_header().await? {
-                request = request.header("Authorization", auth);
+            if let Some(data) = body {
+                request = request.body(data);
             }
 
             return Ok(request.send().await?);
@@ -220,7 +200,7 @@ impl HarborClient {
     /// Check if upstream is reachable
     pub async fn ping(&self) -> Result<bool, ProxyError> {
         let url = format!("{}/v2/", self.config.url);
-        let response = self.request(&url).await?;
+        let response = self.authenticated_request("GET", &url, vec![], None).await?;
         Ok(response.status().is_success())
     }
 
@@ -237,23 +217,18 @@ impl HarborClient {
 
         debug!("Fetching manifest: {}", url);
 
-        let mut request = self.client.get(&url);
-
-        // Accept OCI and Docker manifest types
-        request = request.header(
+        let headers = vec![(
             "Accept",
             "application/vnd.oci.image.manifest.v1+json, \
              application/vnd.oci.image.index.v1+json, \
              application/vnd.docker.distribution.manifest.v2+json, \
              application/vnd.docker.distribution.manifest.list.v2+json, \
              application/vnd.docker.distribution.manifest.v1+prettyjws",
-        );
+        )];
 
-        if let Some(auth) = self.get_auth_header().await? {
-            request = request.header("Authorization", auth);
-        }
-
-        let response = request.send().await?;
+        let response = self
+            .authenticated_request("GET", &url, headers, None)
+            .await?;
         let status = response.status();
 
         if status == StatusCode::NOT_FOUND {
@@ -291,7 +266,11 @@ impl HarborClient {
     }
 
     /// Get a blob from upstream
-    pub async fn get_blob(&self, repository: &str, digest: &str) -> Result<(Bytes, u64), ProxyError> {
+    pub async fn get_blob(
+        &self,
+        repository: &str,
+        digest: &str,
+    ) -> Result<(Bytes, u64), ProxyError> {
         let url = format!(
             "{}/v2/{}/{}/blobs/{}",
             self.config.url, self.config.registry, repository, digest
@@ -299,7 +278,9 @@ impl HarborClient {
 
         debug!("Fetching blob: {}", url);
 
-        let response = self.request(&url).await?;
+        let response = self
+            .authenticated_request("GET", &url, vec![], None)
+            .await?;
         let status = response.status();
 
         if status == StatusCode::NOT_FOUND {
@@ -334,13 +315,9 @@ impl HarborClient {
 
         debug!("Checking blob existence: {}", url);
 
-        let mut request = self.client.head(&url);
-
-        if let Some(auth) = self.get_auth_header().await? {
-            request = request.header("Authorization", auth);
-        }
-
-        let response = request.send().await?;
+        let response = self
+            .authenticated_request("HEAD", &url, vec![], None)
+            .await?;
 
         Ok(response.status().is_success())
     }
@@ -360,13 +337,9 @@ impl HarborClient {
 
         debug!("Starting blob upload to: {}", url);
 
-        let mut request = self.client.post(&url);
-
-        if let Some(auth) = self.get_auth_header().await? {
-            request = request.header("Authorization", auth);
-        }
-
-        let response = request.send().await?;
+        let response = self
+            .authenticated_request("POST", &url, vec![], None)
+            .await?;
 
         if !response.status().is_success() && response.status() != StatusCode::ACCEPTED {
             return Err(ProxyError::UpstreamError {
@@ -391,16 +364,11 @@ impl HarborClient {
 
         debug!("Completing blob upload: {}", upload_url);
 
-        let mut request = self.client
-            .put(&upload_url)
-            .header("Content-Type", "application/octet-stream")
-            .body(data);
+        let headers = vec![("Content-Type", "application/octet-stream")];
 
-        if let Some(auth) = self.get_auth_header().await? {
-            request = request.header("Authorization", auth);
-        }
-
-        let response = request.send().await?;
+        let response = self
+            .authenticated_request("PUT", &upload_url, headers, Some(data))
+            .await?;
 
         if !response.status().is_success() && response.status() != StatusCode::CREATED {
             return Err(ProxyError::UpstreamError {
@@ -427,16 +395,11 @@ impl HarborClient {
 
         debug!("Pushing manifest to: {}", url);
 
-        let mut request = self.client
-            .put(&url)
-            .header("Content-Type", content_type)
-            .body(data);
+        let headers = vec![("Content-Type", content_type)];
 
-        if let Some(auth) = self.get_auth_header().await? {
-            request = request.header("Authorization", auth);
-        }
-
-        let response = request.send().await?;
+        let response = self
+            .authenticated_request("PUT", &url, headers, Some(data))
+            .await?;
         let status = response.status();
 
         if !status.is_success() && status != StatusCode::CREATED {
