@@ -35,9 +35,11 @@ path = "./data/cache"
 # S3 configuration (used when backend = "s3")
 # bucket = "harbor-cache"
 # region = "us-east-1"
-# endpoint = "http://localhost:9000"  # For MinIO
+# endpoint = "http://localhost:9000"  # For MinIO or other S3-compatible services
 # access_key = ""
 # secret_key = ""
+# prefix = ""  # Optional prefix for all objects
+# allow_http = false  # Allow HTTP (not HTTPS) for MinIO local dev
 
 [database]
 # SQLite database path

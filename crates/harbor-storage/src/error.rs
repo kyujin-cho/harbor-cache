@@ -18,4 +18,10 @@ pub enum StorageError {
 
     #[error("Storage backend error: {0}")]
     Backend(String),
+
+    #[error("S3 error: {0}")]
+    S3(String),
+
+    #[error("Configuration error: {0}")]
+    Configuration(String),
 }

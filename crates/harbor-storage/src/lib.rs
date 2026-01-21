@@ -6,7 +6,9 @@
 pub mod backend;
 pub mod error;
 pub mod local;
+pub mod s3;
 
 pub use backend::StorageBackend;
 pub use error::StorageError;
 pub use local::LocalStorage;
+pub use s3::{S3Config, S3Storage};

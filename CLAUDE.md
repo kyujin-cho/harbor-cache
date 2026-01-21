@@ -124,5 +124,34 @@ docker compose down
 - Data is stored in `harbor-setup/data/`
 - Logs are stored in `harbor-setup/logs/`
 
+## End-to-End Testing
+
+```bash
+# Run all tests
+./tests/e2e-test.sh
+
+# Run specific test suite
+./tests/e2e-test.sh basic      # Basic health, auth, stats tests
+./tests/e2e-test.sh multiarch  # OCI multi-architecture tests
+./tests/e2e-test.sh pull       # Pull operation tests
+./tests/e2e-test.sh cache      # Cache management tests
+
+# Setup multi-arch test images (requires skopeo)
+./tests/setup-multiarch.sh
+```
+
+## Docker
+
+```bash
+# Build Docker image
+docker build -t harbor-cache .
+
+# Run with Docker Compose
+docker compose up -d
+
+# Run with S3 storage (MinIO)
+docker compose --profile s3 up -d
+```
+
 ## Programming rules
 - At the end of every implementation cycle, verify if the feature is working with the test cluster. Repeat the test cycle until the bugs are sorted out. After that, commit the changes to local git repository.

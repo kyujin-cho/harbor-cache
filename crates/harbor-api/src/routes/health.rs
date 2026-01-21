@@ -14,6 +14,9 @@ pub struct HealthResponse {
 
 /// Health check handler
 async fn health() -> Json<HealthResponse> {
+    // Record health check metric
+    metrics::counter!("harbor_cache_health_checks_total").increment(1);
+
     Json(HealthResponse {
         status: "healthy".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),

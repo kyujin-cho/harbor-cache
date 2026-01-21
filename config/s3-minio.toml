@@ -1,0 +1,55 @@
+# Harbor Cache Configuration with MinIO S3 Backend
+#
+# This configuration uses MinIO for S3-compatible storage.
+# Start MinIO with:
+#   docker run -p 9000:9000 -p 9001:9001 \
+#     -e MINIO_ROOT_USER=minioadmin \
+#     -e MINIO_ROOT_PASSWORD=minioadmin \
+#     minio/minio server /data --console-address ":9001"
+#
+# Create bucket:
+#   mc alias set local http://localhost:9000 minioadmin minioadmin
+#   mc mb local/harbor-cache
+
+[server]
+bind_address = "0.0.0.0"
+port = 5001
+
+[cache]
+max_size = 10737418240  # 10 GB
+retention_days = 30
+eviction_policy = "lru"
+
+[upstream]
+url = "http://localhost:8880"
+registry = "library"
+skip_tls_verify = true
+username = "admin"
+password = "Harbor12345"
+
+[storage]
+# Use S3 backend
+backend = "s3"
+
+[storage.local]
+path = "./data/cache"
+
+[storage.s3]
+bucket = "harbor-cache"
+region = "us-east-1"
+endpoint = "http://localhost:9000"
+access_key = "minioadmin"
+secret_key = "minioadmin"
+prefix = ""
+allow_http = true  # Required for local MinIO
+
+[database]
+path = "./data/harbor-cache.db"
+
+[auth]
+jwt_secret = "change-me-in-production"
+enabled = true
+
+[logging]
+level = "info"
+format = "pretty"

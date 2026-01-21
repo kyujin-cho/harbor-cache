@@ -6,6 +6,9 @@ use harbor_db::Database;
 use harbor_storage::StorageBackend;
 use std::sync::Arc;
 
+/// Type alias for the Prometheus metrics handle
+pub type MetricsHandle = metrics_exporter_prometheus::PrometheusHandle;
+
 /// Application state shared across handlers
 #[derive(Clone)]
 pub struct AppState {

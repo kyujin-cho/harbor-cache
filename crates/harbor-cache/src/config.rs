@@ -76,6 +76,9 @@ pub struct S3StorageConfig {
     pub endpoint: Option<String>,
     pub access_key: Option<String>,
     pub secret_key: Option<String>,
+    pub prefix: Option<String>,
+    #[serde(default)]
+    pub allow_http: bool,
 }
 
 /// Database configuration

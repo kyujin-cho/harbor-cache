@@ -11,12 +11,12 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 mod config;
 
 use config::Config;
-use harbor_api::{create_router, AppState};
+use harbor_api::{create_router, AppState, MetricsHandle};
 use harbor_auth::JwtManager;
 use harbor_core::{spawn_cleanup_task, CacheConfig, CacheManager, EvictionPolicy, RegistryService};
 use harbor_db::Database;
 use harbor_proxy::{HarborClient, HarborClientConfig};
-use harbor_storage::LocalStorage;
+use harbor_storage::{LocalStorage, S3Config, S3Storage, StorageBackend};
 
 /// Harbor Cache - Lightweight caching proxy for Harbor registries
 #[derive(Parser, Debug)]
@@ -48,9 +48,6 @@ async fn main() -> Result<()> {
 
     info!("Starting Harbor Cache v{}", env!("CARGO_PKG_VERSION"));
 
-    // Create data directories
-    tokio::fs::create_dir_all(&config.storage.local.path).await?;
-
     // Initialize database
     let db_path = format!("sqlite:{}?mode=rwc", config.database.path);
     let db = Database::new(&db_path).await?;
@@ -69,7 +66,27 @@ async fn main() -> Result<()> {
     }
 
     // Initialize storage backend
-    let storage = Arc::new(LocalStorage::new(&config.storage.local.path).await?);
+    let storage: Arc<dyn StorageBackend> = match config.storage.backend.as_str() {
+        "s3" => {
+            let s3_config = S3Config {
+                bucket: config.storage.s3.bucket.clone().unwrap_or_else(|| "harbor-cache".to_string()),
+                region: config.storage.s3.region.clone().unwrap_or_else(|| "us-east-1".to_string()),
+                endpoint: config.storage.s3.endpoint.clone(),
+                access_key_id: config.storage.s3.access_key.clone(),
+                secret_access_key: config.storage.s3.secret_key.clone(),
+                prefix: config.storage.s3.prefix.clone(),
+                allow_http: config.storage.s3.allow_http,
+            };
+            info!("Using S3 storage backend: bucket={}", s3_config.bucket);
+            Arc::new(S3Storage::new(s3_config).await?)
+        }
+        _ => {
+            // Default to local storage
+            tokio::fs::create_dir_all(&config.storage.local.path).await?;
+            info!("Using local storage backend: path={}", config.storage.local.path);
+            Arc::new(LocalStorage::new(&config.storage.local.path).await?)
+        }
+    };
 
     // Initialize upstream client
     let upstream = Arc::new(HarborClient::new(HarborClientConfig {
@@ -113,8 +130,11 @@ async fn main() -> Result<()> {
         config.auth.enabled,
     );
 
+    // Initialize Prometheus metrics
+    let metrics_handle = init_metrics();
+
     // Create router
-    let app = create_router(state)
+    let app = create_router(state, metrics_handle.map(Arc::new))
         .layer(TraceLayer::new_for_http());
 
     // Determine bind address
@@ -144,6 +164,49 @@ fn init_logging(level: &str) {
         .with(fmt::layer())
         .with(filter)
         .init();
+}
+
+/// Initialize Prometheus metrics
+fn init_metrics() -> Option<MetricsHandle> {
+    use metrics_exporter_prometheus::PrometheusBuilder;
+
+    match PrometheusBuilder::new().install_recorder() {
+        Ok(handle) => {
+            info!("Prometheus metrics enabled at /metrics");
+
+            // Register some default metrics
+            metrics::describe_counter!(
+                "harbor_cache_requests_total",
+                "Total number of cache requests"
+            );
+            metrics::describe_counter!(
+                "harbor_cache_hits_total",
+                "Total number of cache hits"
+            );
+            metrics::describe_counter!(
+                "harbor_cache_misses_total",
+                "Total number of cache misses"
+            );
+            metrics::describe_gauge!(
+                "harbor_cache_size_bytes",
+                "Current cache size in bytes"
+            );
+            metrics::describe_gauge!(
+                "harbor_cache_entries",
+                "Current number of cache entries"
+            );
+            metrics::describe_histogram!(
+                "harbor_cache_request_duration_seconds",
+                "Request duration in seconds"
+            );
+
+            Some(handle)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to initialize Prometheus metrics: {}", e);
+            None
+        }
+    }
 }
 
 /// Wait for shutdown signal
