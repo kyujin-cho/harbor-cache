@@ -19,6 +19,9 @@ pub enum ApiError {
     #[error("Forbidden")]
     Forbidden,
 
+    #[error("Method not allowed")]
+    MethodNotAllowed,
+
     #[error("Internal error: {0}")]
     Internal(String),
 
@@ -42,6 +45,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", "Unauthorized".to_string()),
             ApiError::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Forbidden".to_string()),
+            ApiError::MethodNotAllowed => (StatusCode::METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "Method not allowed".to_string()),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", msg.clone()),
             ApiError::Core(e) => match e {
                 harbor_core::CoreError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),

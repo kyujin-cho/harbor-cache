@@ -1,18 +1,82 @@
 //! Management API routes
 
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    extract::{FromRef, FromRequestParts, Path, State},
+    http::{header::AUTHORIZATION, request::Parts, StatusCode},
     routing::{delete, get, post, put},
     Json, Router,
 };
-use harbor_auth::{hash_password, verify_password};
+use harbor_auth::{hash_password, verify_password, AuthUser};
 use harbor_db::{NewUser, UserRole};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::error::ApiError;
 use crate::state::AppState;
+
+// ==================== Auth Extractors ====================
+
+/// Extractor for authenticated user (required)
+pub struct RequireAuth(pub AuthUser);
+
+impl<S> FromRequestParts<S> for RequireAuth
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let app_state = AppState::from_ref(state);
+
+        // Skip auth check if disabled
+        if !app_state.auth_enabled {
+            return Ok(RequireAuth(AuthUser {
+                id: 0,
+                username: "anonymous".to_string(),
+                role: UserRole::Admin,
+            }));
+        }
+
+        let auth_header = parts
+            .headers
+            .get(AUTHORIZATION)
+            .and_then(|h| h.to_str().ok())
+            .ok_or(ApiError::Unauthorized)?;
+
+        if !auth_header.starts_with("Bearer ") {
+            return Err(ApiError::Unauthorized);
+        }
+
+        let token = &auth_header[7..];
+        let claims = app_state.jwt.validate_token(token).map_err(|_| ApiError::Unauthorized)?;
+        let user = AuthUser::from_claims(&claims);
+
+        debug!("Authenticated user: {} ({})", user.username, user.role.as_str());
+        Ok(RequireAuth(user))
+    }
+}
+
+/// Extractor for admin user (required)
+pub struct RequireAdmin(pub AuthUser);
+
+impl<S> FromRequestParts<S> for RequireAdmin
+where
+    AppState: FromRef<S>,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let RequireAuth(user) = RequireAuth::from_request_parts(parts, state).await?;
+
+        if !user.role.is_admin() {
+            return Err(ApiError::Forbidden);
+        }
+
+        Ok(RequireAdmin(user))
+    }
+}
 
 // ==================== Types ====================
 
@@ -68,6 +132,27 @@ pub struct CacheStatsResponse {
     pub hit_rate: f64,
 }
 
+/// Config entry response
+#[derive(Serialize)]
+pub struct ConfigEntryResponse {
+    pub key: String,
+    pub value: String,
+    pub updated_at: String,
+}
+
+/// Update config request
+#[derive(Deserialize)]
+pub struct UpdateConfigRequest {
+    pub entries: Vec<ConfigUpdateEntry>,
+}
+
+/// Single config update entry
+#[derive(Deserialize)]
+pub struct ConfigUpdateEntry {
+    pub key: String,
+    pub value: String,
+}
+
 // ==================== Auth Routes ====================
 
 /// POST /api/v1/auth/login
@@ -102,8 +187,11 @@ async fn login(
 
 // ==================== User Routes ====================
 
-/// GET /api/v1/users
-async fn list_users(State(state): State<AppState>) -> Result<Json<Vec<UserResponse>>, ApiError> {
+/// GET /api/v1/users (Admin only)
+async fn list_users(
+    _admin: RequireAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<UserResponse>>, ApiError> {
     let users = state.db.list_users().await?;
 
     Ok(Json(
@@ -120,8 +208,9 @@ async fn list_users(State(state): State<AppState>) -> Result<Json<Vec<UserRespon
     ))
 }
 
-/// POST /api/v1/users
+/// POST /api/v1/users (Admin only)
 async fn create_user(
+    _admin: RequireAdmin,
     State(state): State<AppState>,
     Json(request): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<UserResponse>), ApiError> {
@@ -155,8 +244,9 @@ async fn create_user(
     ))
 }
 
-/// GET /api/v1/users/:id
+/// GET /api/v1/users/:id (Admin only)
 async fn get_user(
+    _admin: RequireAdmin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<Json<UserResponse>, ApiError> {
@@ -175,8 +265,9 @@ async fn get_user(
     }))
 }
 
-/// PUT /api/v1/users/:id
+/// PUT /api/v1/users/:id (Admin only)
 async fn update_user(
+    _admin: RequireAdmin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
     Json(request): Json<UpdateUserRequest>,
@@ -221,8 +312,9 @@ async fn update_user(
     }))
 }
 
-/// DELETE /api/v1/users/:id
+/// DELETE /api/v1/users/:id (Admin only)
 async fn delete_user(
+    _admin: RequireAdmin,
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
@@ -240,8 +332,11 @@ async fn delete_user(
 
 // ==================== Cache Routes ====================
 
-/// GET /api/v1/cache/stats
-async fn cache_stats(State(state): State<AppState>) -> Result<Json<CacheStatsResponse>, ApiError> {
+/// GET /api/v1/cache/stats (Authenticated)
+async fn cache_stats(
+    _auth: RequireAuth,
+    State(state): State<AppState>,
+) -> Result<Json<CacheStatsResponse>, ApiError> {
     let stats = state.cache.stats().await;
 
     let hit_rate = if stats.hit_count + stats.miss_count > 0 {
@@ -262,8 +357,11 @@ async fn cache_stats(State(state): State<AppState>) -> Result<Json<CacheStatsRes
     }))
 }
 
-/// DELETE /api/v1/cache
-async fn clear_cache(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+/// DELETE /api/v1/cache (Admin only)
+async fn clear_cache(
+    _admin: RequireAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     info!("Clearing cache");
 
     let count = state.cache.clear().await?;
@@ -273,8 +371,11 @@ async fn clear_cache(State(state): State<AppState>) -> Result<Json<serde_json::V
     })))
 }
 
-/// POST /api/v1/cache/cleanup
-async fn cleanup_cache(State(state): State<AppState>) -> Result<Json<serde_json::Value>, ApiError> {
+/// POST /api/v1/cache/cleanup (Admin only)
+async fn cleanup_cache(
+    _admin: RequireAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     info!("Running cache cleanup");
 
     let count = state.cache.cleanup_expired().await?;
@@ -282,6 +383,82 @@ async fn cleanup_cache(State(state): State<AppState>) -> Result<Json<serde_json:
     Ok(Json(serde_json::json!({
         "cleaned": count
     })))
+}
+
+// ==================== Config Routes ====================
+
+/// GET /api/v1/config (Admin only)
+async fn get_config(
+    _admin: RequireAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<Vec<ConfigEntryResponse>>, ApiError> {
+    let entries = state.db.list_config().await?;
+
+    Ok(Json(
+        entries
+            .into_iter()
+            .map(|e| ConfigEntryResponse {
+                key: e.key,
+                value: e.value,
+                updated_at: e.updated_at.to_rfc3339(),
+            })
+            .collect(),
+    ))
+}
+
+/// PUT /api/v1/config (Admin only)
+async fn update_config(
+    _admin: RequireAdmin,
+    State(state): State<AppState>,
+    Json(request): Json<UpdateConfigRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    info!("Updating {} config entries", request.entries.len());
+
+    for entry in &request.entries {
+        state.db.set_config(&entry.key, &entry.value).await?;
+    }
+
+    Ok(Json(serde_json::json!({
+        "updated": request.entries.len()
+    })))
+}
+
+/// GET /api/v1/config/:key (Admin only)
+async fn get_config_key(
+    _admin: RequireAdmin,
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<ConfigEntryResponse>, ApiError> {
+    let entries = state.db.list_config().await?;
+
+    let entry = entries
+        .into_iter()
+        .find(|e| e.key == key)
+        .ok_or_else(|| ApiError::NotFound(format!("Config key: {}", key)))?;
+
+    Ok(Json(ConfigEntryResponse {
+        key: entry.key,
+        value: entry.value,
+        updated_at: entry.updated_at.to_rfc3339(),
+    }))
+}
+
+/// DELETE /api/v1/config/:key (Admin only)
+async fn delete_config_key(
+    _admin: RequireAdmin,
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    debug!("Deleting config key: {}", key);
+
+    let deleted = state.db.delete_config(&key).await?;
+
+    if deleted {
+        info!("Deleted config key: {}", key);
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound(format!("Config key: {}", key)))
+    }
 }
 
 // ==================== Helper Functions ====================
@@ -306,21 +483,27 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+
 // ==================== Routes ====================
 
 /// Create management API routes
 pub fn routes() -> Router<AppState> {
     Router::new()
-        // Auth
+        // Auth (public)
         .route("/api/v1/auth/login", post(login))
-        // Users
+        // Users (admin only via extractor)
         .route("/api/v1/users", get(list_users))
         .route("/api/v1/users", post(create_user))
         .route("/api/v1/users/{id}", get(get_user))
         .route("/api/v1/users/{id}", put(update_user))
         .route("/api/v1/users/{id}", delete(delete_user))
-        // Cache
+        // Cache (auth required via extractor)
         .route("/api/v1/cache/stats", get(cache_stats))
         .route("/api/v1/cache", delete(clear_cache))
         .route("/api/v1/cache/cleanup", post(cleanup_cache))
+        // Config (admin only via extractor)
+        .route("/api/v1/config", get(get_config))
+        .route("/api/v1/config", put(update_config))
+        .route("/api/v1/config/{key}", get(get_config_key))
+        .route("/api/v1/config/{key}", delete(delete_config_key))
 }

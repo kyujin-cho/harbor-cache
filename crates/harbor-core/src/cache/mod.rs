@@ -3,5 +3,5 @@
 mod manager;
 mod policy;
 
-pub use manager::{CacheConfig, CacheManager};
+pub use manager::{spawn_cleanup_task, CacheConfig, CacheManager};
 pub use policy::EvictionPolicy;

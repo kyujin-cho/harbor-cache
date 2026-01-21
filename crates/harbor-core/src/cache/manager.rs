@@ -309,4 +309,79 @@ impl CacheManager {
         let mut stats = self.stats.write().await;
         stats.miss_count += 1;
     }
+
+    /// Run size enforcement to ensure cache is within limits
+    pub async fn enforce_size_limit(&self) -> Result<u64, CoreError> {
+        let current_size = self.db.get_total_cache_size().await? as u64;
+
+        if current_size <= self.config.max_size {
+            return Ok(0);
+        }
+
+        let to_free = current_size - self.config.max_size;
+        info!(
+            "Cache size {} exceeds limit {}, freeing {} bytes",
+            current_size, self.config.max_size, to_free
+        );
+
+        self.evict(to_free).await?;
+        Ok(to_free)
+    }
+
+    /// Run full maintenance: cleanup expired entries and enforce size limits
+    pub async fn run_maintenance(&self) -> Result<(u64, u64), CoreError> {
+        info!("Running cache maintenance");
+
+        // First, clean up expired entries
+        let expired = self.cleanup_expired().await?;
+
+        // Then, enforce size limits
+        let freed = self.enforce_size_limit().await?;
+
+        info!(
+            "Maintenance complete: {} expired entries removed, {} bytes freed",
+            expired, freed
+        );
+
+        Ok((expired, freed))
+    }
+}
+
+/// Spawn a background task that runs cache maintenance periodically
+pub fn spawn_cleanup_task(
+    cache: Arc<CacheManager>,
+    interval_hours: u64,
+) -> tokio::task::JoinHandle<()> {
+    use tokio::time::{interval, Duration};
+
+    info!(
+        "Starting background cache cleanup task (interval: {} hours)",
+        interval_hours
+    );
+
+    tokio::spawn(async move {
+        let mut ticker = interval(Duration::from_secs(interval_hours * 3600));
+
+        // Skip the first tick (which fires immediately)
+        ticker.tick().await;
+
+        loop {
+            ticker.tick().await;
+            info!("Running scheduled cache maintenance");
+
+            match cache.run_maintenance().await {
+                Ok((expired, freed)) => {
+                    if expired > 0 || freed > 0 {
+                        info!(
+                            "Scheduled maintenance: {} expired removed, {} bytes freed",
+                            expired, freed
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!("Error during scheduled maintenance: {}", e);
+                }
+            }
+        }
+    })
 }

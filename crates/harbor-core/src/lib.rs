@@ -7,6 +7,6 @@ pub mod cache;
 pub mod error;
 pub mod registry;
 
-pub use cache::{CacheConfig, CacheManager, EvictionPolicy};
+pub use cache::{spawn_cleanup_task, CacheConfig, CacheManager, EvictionPolicy};
 pub use error::CoreError;
 pub use registry::RegistryService;

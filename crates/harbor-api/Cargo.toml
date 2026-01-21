@@ -21,3 +21,4 @@ tracing.workspace = true
 uuid.workspace = true
 bytes.workspace = true
 futures.workspace = true
+async-trait.workspace = true

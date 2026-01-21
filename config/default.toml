@@ -2,7 +2,7 @@
 
 [server]
 bind_address = "0.0.0.0"
-port = 5000
+port = 5001
 
 [cache]
 # Maximum cache size in bytes (10 GB)

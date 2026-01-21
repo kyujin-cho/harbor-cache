@@ -3,8 +3,6 @@
 use bytes::Bytes;
 use reqwest::{Client, Response, StatusCode};
 use serde::Deserialize;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::error::ProxyError;
@@ -70,22 +68,58 @@ impl HarborClient {
             ));
         }
 
-        let parts: Vec<&str> = www_auth[7..].split(',').collect();
+        let auth_params = &www_auth[7..];
         let mut realm = None;
         let mut service = None;
         let mut scope = None;
 
-        for part in parts {
-            let kv: Vec<&str> = part.splitn(2, '=').collect();
-            if kv.len() == 2 {
-                let key = kv[0].trim();
-                let value = kv[1].trim().trim_matches('"');
-                match key {
-                    "realm" => realm = Some(value),
-                    "service" => service = Some(value),
-                    "scope" => scope = Some(value),
-                    _ => {}
+        // Parse key="value" pairs, respecting quotes (commas inside quotes are not separators)
+        let mut current_key = String::new();
+        let mut current_value = String::new();
+        let mut in_value = false;
+        let mut in_quotes = false;
+
+        for ch in auth_params.chars() {
+            match ch {
+                '"' => {
+                    in_quotes = !in_quotes;
                 }
+                '=' if !in_quotes && !in_value => {
+                    in_value = true;
+                }
+                ',' if !in_quotes => {
+                    // End of key-value pair
+                    let key = current_key.trim();
+                    let value = current_value.trim().trim_matches('"');
+                    match key {
+                        "realm" => realm = Some(value.to_string()),
+                        "service" => service = Some(value.to_string()),
+                        "scope" => scope = Some(value.to_string()),
+                        _ => {}
+                    }
+                    current_key.clear();
+                    current_value.clear();
+                    in_value = false;
+                }
+                _ => {
+                    if in_value {
+                        current_value.push(ch);
+                    } else {
+                        current_key.push(ch);
+                    }
+                }
+            }
+        }
+
+        // Handle last key-value pair
+        if !current_key.is_empty() {
+            let key = current_key.trim();
+            let value = current_value.trim().trim_matches('"');
+            match key {
+                "realm" => realm = Some(value.to_string()),
+                "service" => service = Some(value.to_string()),
+                "scope" => scope = Some(value.to_string()),
+                _ => {}
             }
         }
 
@@ -94,7 +128,7 @@ impl HarborClient {
         ))?;
 
         // Build token request URL
-        let mut url = realm.to_string();
+        let mut url = realm.clone();
         let mut params = vec![];
 
         if let Some(svc) = service {
@@ -204,15 +238,28 @@ impl HarborClient {
         Ok(response.status().is_success())
     }
 
+    /// Get the full repository path, handling the registry prefix
+    fn full_repository(&self, repository: &str) -> String {
+        // If repository already starts with registry prefix, don't double it
+        if repository.starts_with(&format!("{}/", self.config.registry)) {
+            repository.to_string()
+        } else if repository == self.config.registry {
+            repository.to_string()
+        } else {
+            format!("{}/{}", self.config.registry, repository)
+        }
+    }
+
     /// Get a manifest from upstream
     pub async fn get_manifest(
         &self,
         repository: &str,
         reference: &str,
     ) -> Result<(Bytes, String, String), ProxyError> {
+        let full_repo = self.full_repository(repository);
         let url = format!(
-            "{}/v2/{}/{}/manifests/{}",
-            self.config.url, self.config.registry, repository, reference
+            "{}/v2/{}/manifests/{}",
+            self.config.url, full_repo, reference
         );
 
         debug!("Fetching manifest: {}", url);
@@ -271,9 +318,10 @@ impl HarborClient {
         repository: &str,
         digest: &str,
     ) -> Result<(Bytes, u64), ProxyError> {
+        let full_repo = self.full_repository(repository);
         let url = format!(
-            "{}/v2/{}/{}/blobs/{}",
-            self.config.url, self.config.registry, repository, digest
+            "{}/v2/{}/blobs/{}",
+            self.config.url, full_repo, digest
         );
 
         debug!("Fetching blob: {}", url);
@@ -308,9 +356,10 @@ impl HarborClient {
 
     /// Check if a blob exists
     pub async fn blob_exists(&self, repository: &str, digest: &str) -> Result<bool, ProxyError> {
+        let full_repo = self.full_repository(repository);
         let url = format!(
-            "{}/v2/{}/{}/blobs/{}",
-            self.config.url, self.config.registry, repository, digest
+            "{}/v2/{}/blobs/{}",
+            self.config.url, full_repo, digest
         );
 
         debug!("Checking blob existence: {}", url);
@@ -329,10 +378,17 @@ impl HarborClient {
         digest: &str,
         data: Bytes,
     ) -> Result<(), ProxyError> {
+        // First check if blob already exists upstream
+        if self.blob_exists(repository, digest).await? {
+            debug!("Blob {} already exists upstream, skipping upload", digest);
+            return Ok(());
+        }
+
         // Start upload
+        let full_repo = self.full_repository(repository);
         let url = format!(
-            "{}/v2/{}/{}/blobs/uploads/",
-            self.config.url, self.config.registry, repository
+            "{}/v2/{}/blobs/uploads/",
+            self.config.url, full_repo
         );
 
         debug!("Starting blob upload to: {}", url);
@@ -355,14 +411,16 @@ impl HarborClient {
             .and_then(|h| h.to_str().ok())
             .ok_or_else(|| ProxyError::InvalidResponse("Missing Location header".to_string()))?;
 
-        // Complete upload
+        // Complete upload with monolithic PUT (send all data in one request)
+        // Location header may already contain query params (like ?_state=...)
+        let separator = if location.contains('?') { '&' } else { '?' };
         let upload_url = if location.starts_with("http") {
-            format!("{}?digest={}", location, digest)
+            format!("{}{}digest={}", location, separator, digest)
         } else {
-            format!("{}{}?digest={}", self.config.url, location, digest)
+            format!("{}{}{}digest={}", self.config.url, location, separator, digest)
         };
 
-        debug!("Completing blob upload: {}", upload_url);
+        debug!("Completing blob upload: {} ({} bytes)", upload_url, data.len());
 
         let headers = vec![("Content-Type", "application/octet-stream")];
 
@@ -377,6 +435,7 @@ impl HarborClient {
             });
         }
 
+        debug!("Blob {} uploaded successfully", digest);
         Ok(())
     }
 
@@ -388,9 +447,10 @@ impl HarborClient {
         data: Bytes,
         content_type: &str,
     ) -> Result<String, ProxyError> {
+        let full_repo = self.full_repository(repository);
         let url = format!(
-            "{}/v2/{}/{}/manifests/{}",
-            self.config.url, self.config.registry, repository, reference
+            "{}/v2/{}/manifests/{}",
+            self.config.url, full_repo, reference
         );
 
         debug!("Pushing manifest to: {}", url);
@@ -419,16 +479,4 @@ impl HarborClient {
 
         Ok(digest)
     }
-}
-
-/// Simple base64 encoding
-fn base64_encode(input: &str) -> String {
-    use std::io::Write;
-    let mut buf = Vec::new();
-    {
-        let mut encoder =
-            base64::write::EncoderWriter::new(&mut buf, &base64::engine::general_purpose::STANDARD);
-        encoder.write_all(input.as_bytes()).unwrap();
-    }
-    String::from_utf8(buf).unwrap()
 }

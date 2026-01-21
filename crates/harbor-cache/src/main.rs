@@ -13,7 +13,7 @@ mod config;
 use config::Config;
 use harbor_api::{create_router, AppState};
 use harbor_auth::JwtManager;
-use harbor_core::{CacheConfig, CacheManager, EvictionPolicy, RegistryService};
+use harbor_core::{spawn_cleanup_task, CacheConfig, CacheManager, EvictionPolicy, RegistryService};
 use harbor_db::Database;
 use harbor_proxy::{HarborClient, HarborClientConfig};
 use harbor_storage::LocalStorage;
@@ -88,6 +88,9 @@ async fn main() -> Result<()> {
             .unwrap_or_default(),
     };
     let cache = Arc::new(CacheManager::new(db.clone(), storage.clone(), cache_config));
+
+    // Spawn background cleanup task (runs every hour)
+    let _cleanup_handle = spawn_cleanup_task(cache.clone(), 1);
 
     // Initialize registry service
     let registry = Arc::new(RegistryService::new(

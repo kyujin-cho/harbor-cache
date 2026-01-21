@@ -580,6 +580,39 @@ impl Database {
         .await?;
         Ok(())
     }
+
+    /// List all config values
+    pub async fn list_config(&self) -> Result<Vec<ConfigEntry>, DbError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT key, value, updated_at
+            FROM config
+            ORDER BY key
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| ConfigEntry {
+                key: row.get("key"),
+                value: row.get("value"),
+                updated_at: chrono::DateTime::parse_from_rfc3339(row.get("updated_at"))
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            })
+            .collect())
+    }
+
+    /// Delete a config value
+    pub async fn delete_config(&self, key: &str) -> Result<bool, DbError> {
+        let result = sqlx::query("DELETE FROM config WHERE key = ?")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
 }
 
 /// Cache statistics
