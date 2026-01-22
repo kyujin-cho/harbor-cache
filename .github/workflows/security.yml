@@ -4,7 +4,21 @@ on:
   schedule:
     # Run every Monday at 9:00 AM UTC
     - cron: '0 9 * * 1'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch: # Allow manual trigger
+  # Also run on PRs that modify dependencies
+  pull_request:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+
+# Restrict permissions to minimum required (security best practice)
+permissions:
+  contents: read
+
+# Cancel in-progress runs when a new run is triggered
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,25 +30,9 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Run cargo audit
-        run: cargo audit
-
-      - name: Upload audit results
-        if: failure()
-        uses: actions/upload-artifact@v4
+        uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
-          name: security-audit-results
-          path: |
-            Cargo.lock
-            audit-report.txt
+          token: ${{ secrets.GITHUB_TOKEN }}
