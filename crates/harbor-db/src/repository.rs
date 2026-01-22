@@ -171,26 +171,7 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(result.map(|row| {
-            let entry_type_str: &str = row.get("entry_type");
-            CacheEntry {
-                id: row.get("id"),
-                entry_type: entry_type_str.parse().unwrap_or(EntryType::Blob),
-                repository: row.get("repository"),
-                reference: row.get("reference"),
-                digest: row.get("digest"),
-                content_type: row.get("content_type"),
-                size: row.get("size"),
-                created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                last_accessed_at: chrono::DateTime::parse_from_rfc3339(row.get("last_accessed_at"))
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                access_count: row.get("access_count"),
-                storage_path: row.get("storage_path"),
-            }
-        }))
+result.map(|row| CacheEntry::try_from(&row).map_err(DbError::from)).transpose()
     }
 
     /// Update last accessed time and increment access count
@@ -233,29 +214,9 @@ impl Database {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| {
-                let entry_type_str: &str = row.get("entry_type");
-                CacheEntry {
-                    id: row.get("id"),
-                    entry_type: entry_type_str.parse().unwrap_or(EntryType::Blob),
-                    repository: row.get("repository"),
-                    reference: row.get("reference"),
-                    digest: row.get("digest"),
-                    content_type: row.get("content_type"),
-                    size: row.get("size"),
-                    created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now()),
-                    last_accessed_at: chrono::DateTime::parse_from_rfc3339(row.get("last_accessed_at"))
-                        .map(|dt| dt.with_timezone(&Utc))
-                        .unwrap_or_else(|_| Utc::now()),
-                    access_count: row.get("access_count"),
-                    storage_path: row.get("storage_path"),
-                }
-            })
-            .collect())
+rows.iter()
+            .map(|row| CacheEntry::try_from(row).map_err(DbError::from))
+            .collect()
     }
 
     /// Get total cache size
@@ -351,18 +312,7 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(result.map(|row| User {
-            id: row.get("id"),
-            username: row.get("username"),
-            password_hash: row.get("password_hash"),
-            role: row.get::<&str, _>("role").parse().unwrap_or(UserRole::ReadOnly),
-            created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            updated_at: chrono::DateTime::parse_from_rfc3339(row.get("updated_at"))
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-        }))
+result.map(|row| User::try_from(&row).map_err(DbError::from)).transpose()
     }
 
     /// Get a user by ID
@@ -378,18 +328,7 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(result.map(|row| User {
-            id: row.get("id"),
-            username: row.get("username"),
-            password_hash: row.get("password_hash"),
-            role: row.get::<&str, _>("role").parse().unwrap_or(UserRole::ReadOnly),
-            created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            updated_at: chrono::DateTime::parse_from_rfc3339(row.get("updated_at"))
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-        }))
+        result.map(|row| User::try_from(&row).map_err(DbError::from)).transpose()
     }
 
     /// List all users
@@ -404,21 +343,9 @@ impl Database {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| User {
-                id: row.get("id"),
-                username: row.get("username"),
-                password_hash: row.get("password_hash"),
-                role: row.get::<&str, _>("role").parse().unwrap_or(UserRole::ReadOnly),
-                created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                updated_at: chrono::DateTime::parse_from_rfc3339(row.get("updated_at"))
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-            })
-            .collect())
+        rows.iter()
+            .map(|row| User::try_from(row).map_err(DbError::from))
+            .collect()
     }
 
     /// Update user role
@@ -517,18 +444,7 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(result.map(|row| UploadSession {
-            id: row.get("id"),
-            repository: row.get("repository"),
-            started_at: chrono::DateTime::parse_from_rfc3339(row.get("started_at"))
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            last_chunk_at: chrono::DateTime::parse_from_rfc3339(row.get("last_chunk_at"))
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            bytes_received: row.get("bytes_received"),
-            temp_path: row.get("temp_path"),
-        }))
+        result.map(|row| UploadSession::try_from(&row).map_err(DbError::from)).transpose()
     }
 
     /// Update upload session bytes received
@@ -601,16 +517,9 @@ impl Database {
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(rows
-            .into_iter()
-            .map(|row| ConfigEntry {
-                key: row.get("key"),
-                value: row.get("value"),
-                updated_at: chrono::DateTime::parse_from_rfc3339(row.get("updated_at"))
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-            })
-            .collect())
+        rows.iter()
+            .map(|row| ConfigEntry::try_from(row).map_err(DbError::from))
+            .collect()
     }
 
     /// Delete a config value
