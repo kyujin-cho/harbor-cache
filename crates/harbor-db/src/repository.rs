@@ -171,22 +171,25 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(result.map(|row| CacheEntry {
-            id: row.get("id"),
-            entry_type: EntryType::from_str(row.get("entry_type")).unwrap_or(EntryType::Blob),
-            repository: row.get("repository"),
-            reference: row.get("reference"),
-            digest: row.get("digest"),
-            content_type: row.get("content_type"),
-            size: row.get("size"),
-            created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            last_accessed_at: chrono::DateTime::parse_from_rfc3339(row.get("last_accessed_at"))
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            access_count: row.get("access_count"),
-            storage_path: row.get("storage_path"),
+        Ok(result.map(|row| {
+            let entry_type_str: &str = row.get("entry_type");
+            CacheEntry {
+                id: row.get("id"),
+                entry_type: entry_type_str.parse().unwrap_or(EntryType::Blob),
+                repository: row.get("repository"),
+                reference: row.get("reference"),
+                digest: row.get("digest"),
+                content_type: row.get("content_type"),
+                size: row.get("size"),
+                created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                last_accessed_at: chrono::DateTime::parse_from_rfc3339(row.get("last_accessed_at"))
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                access_count: row.get("access_count"),
+                storage_path: row.get("storage_path"),
+            }
         }))
     }
 
@@ -232,22 +235,25 @@ impl Database {
 
         Ok(rows
             .into_iter()
-            .map(|row| CacheEntry {
-                id: row.get("id"),
-                entry_type: EntryType::from_str(row.get("entry_type")).unwrap_or(EntryType::Blob),
-                repository: row.get("repository"),
-                reference: row.get("reference"),
-                digest: row.get("digest"),
-                content_type: row.get("content_type"),
-                size: row.get("size"),
-                created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                last_accessed_at: chrono::DateTime::parse_from_rfc3339(row.get("last_accessed_at"))
-                    .map(|dt| dt.with_timezone(&Utc))
-                    .unwrap_or_else(|_| Utc::now()),
-                access_count: row.get("access_count"),
-                storage_path: row.get("storage_path"),
+            .map(|row| {
+                let entry_type_str: &str = row.get("entry_type");
+                CacheEntry {
+                    id: row.get("id"),
+                    entry_type: entry_type_str.parse().unwrap_or(EntryType::Blob),
+                    repository: row.get("repository"),
+                    reference: row.get("reference"),
+                    digest: row.get("digest"),
+                    content_type: row.get("content_type"),
+                    size: row.get("size"),
+                    created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    last_accessed_at: chrono::DateTime::parse_from_rfc3339(row.get("last_accessed_at"))
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(|_| Utc::now()),
+                    access_count: row.get("access_count"),
+                    storage_path: row.get("storage_path"),
+                }
             })
             .collect())
     }
@@ -288,6 +294,8 @@ impl Database {
             entry_count,
             manifest_count,
             blob_count,
+            hit_count: 0,
+            miss_count: 0,
         })
     }
 
@@ -347,7 +355,7 @@ impl Database {
             id: row.get("id"),
             username: row.get("username"),
             password_hash: row.get("password_hash"),
-            role: UserRole::from_str(row.get("role")).unwrap_or(UserRole::ReadOnly),
+            role: row.get::<&str, _>("role").parse().unwrap_or(UserRole::ReadOnly),
             created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -374,7 +382,7 @@ impl Database {
             id: row.get("id"),
             username: row.get("username"),
             password_hash: row.get("password_hash"),
-            role: UserRole::from_str(row.get("role")).unwrap_or(UserRole::ReadOnly),
+            role: row.get::<&str, _>("role").parse().unwrap_or(UserRole::ReadOnly),
             created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -402,7 +410,7 @@ impl Database {
                 id: row.get("id"),
                 username: row.get("username"),
                 password_hash: row.get("password_hash"),
-                role: UserRole::from_str(row.get("role")).unwrap_or(UserRole::ReadOnly),
+                role: row.get::<&str, _>("role").parse().unwrap_or(UserRole::ReadOnly),
                 created_at: chrono::DateTime::parse_from_rfc3339(row.get("created_at"))
                     .map(|dt| dt.with_timezone(&Utc))
                     .unwrap_or_else(|_| Utc::now()),
@@ -616,10 +624,16 @@ impl Database {
 }
 
 /// Cache statistics
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CacheStats {
     pub total_size: i64,
     pub entry_count: i64,
     pub manifest_count: i64,
     pub blob_count: i64,
+    /// In-memory hit count (not persisted to database)
+    #[serde(default)]
+    pub hit_count: i64,
+    /// In-memory miss count (not persisted to database)
+    #[serde(default)]
+    pub miss_count: i64,
 }

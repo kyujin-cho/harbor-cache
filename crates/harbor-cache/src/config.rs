@@ -118,25 +118,17 @@ impl Default for LoggingConfig {
 }
 
 /// TLS configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TlsConfig {
     /// Enable TLS/HTTPS
     #[serde(default)]
     pub enabled: bool,
     /// Path to TLS certificate file (PEM format)
+    #[serde(default)]
     pub cert_path: Option<String>,
     /// Path to TLS private key file (PEM format)
+    #[serde(default)]
     pub key_path: Option<String>,
-}
-
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            cert_path: None,
-            key_path: None,
-        }
-    }
 }
 
 // Default value functions

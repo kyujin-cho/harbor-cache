@@ -58,7 +58,16 @@ where
 }
 
 /// Extractor for admin user (required)
-pub struct RequireAdmin(pub AuthUser);
+#[allow(dead_code)]
+pub struct RequireAdmin(AuthUser);
+
+#[allow(dead_code)]
+impl RequireAdmin {
+    /// Get the authenticated admin user
+    pub fn user(&self) -> &AuthUser {
+        &self.0
+    }
+}
 
 impl<S> FromRequestParts<S> for RequireAdmin
 where
@@ -122,13 +131,13 @@ pub struct UserResponse {
 /// Cache statistics response
 #[derive(Serialize)]
 pub struct CacheStatsResponse {
-    pub total_size: u64,
+    pub total_size: i64,
     pub total_size_human: String,
-    pub entry_count: u64,
-    pub manifest_count: u64,
-    pub blob_count: u64,
-    pub hit_count: u64,
-    pub miss_count: u64,
+    pub entry_count: i64,
+    pub manifest_count: i64,
+    pub blob_count: i64,
+    pub hit_count: i64,
+    pub miss_count: i64,
     pub hit_rate: f64,
 }
 
@@ -216,8 +225,8 @@ async fn create_user(
 ) -> Result<(StatusCode, Json<UserResponse>), ApiError> {
     debug!("Creating user: {}", request.username);
 
-    let role = UserRole::from_str(&request.role)
-        .ok_or_else(|| ApiError::BadRequest(format!("Invalid role: {}", request.role)))?;
+    let role: UserRole = request.role.parse()
+        .map_err(|_| ApiError::BadRequest(format!("Invalid role: {}", request.role)))?;
 
     let password_hash = hash_password(&request.password)?;
 
@@ -283,8 +292,8 @@ async fn update_user(
 
     // Update role if provided
     if let Some(role_str) = &request.role {
-        let role = UserRole::from_str(role_str)
-            .ok_or_else(|| ApiError::BadRequest(format!("Invalid role: {}", role_str)))?;
+        let role: UserRole = role_str.parse()
+            .map_err(|_| ApiError::BadRequest(format!("Invalid role: {}", role_str)))?;
         state.db.update_user_role(id, role).await?;
     }
 
@@ -464,11 +473,15 @@ async fn delete_config_key(
 // ==================== Helper Functions ====================
 
 /// Format bytes as human-readable string
-fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    const TB: u64 = GB * 1024;
+fn format_bytes(bytes: i64) -> String {
+    if bytes < 0 {
+        return format!("{} B", bytes);
+    }
+
+    const KB: i64 = 1024;
+    const MB: i64 = KB * 1024;
+    const GB: i64 = MB * 1024;
+    const TB: i64 = GB * 1024;
 
     if bytes >= TB {
         format!("{:.2} TB", bytes as f64 / TB as f64)
