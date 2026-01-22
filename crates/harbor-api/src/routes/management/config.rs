@@ -14,6 +14,31 @@ use crate::state::AppState;
 use super::auth::RequireAdmin;
 use super::types::{ConfigEntryResponse, UpdateConfigRequest};
 
+// ==================== Input Validation ====================
+
+/// Maximum allowed config key/value length
+const MAX_CONFIG_LENGTH: usize = 4096;
+
+/// Validate config key/value length
+fn validate_config_entry(key: &str, value: &str) -> Result<(), ApiError> {
+    if key.is_empty() {
+        return Err(ApiError::BadRequest("Config key cannot be empty".to_string()));
+    }
+    if key.len() > MAX_CONFIG_LENGTH {
+        return Err(ApiError::BadRequest(format!(
+            "Config key exceeds maximum length of {} characters",
+            MAX_CONFIG_LENGTH
+        )));
+    }
+    if value.len() > MAX_CONFIG_LENGTH {
+        return Err(ApiError::BadRequest(format!(
+            "Config value exceeds maximum length of {} characters",
+            MAX_CONFIG_LENGTH
+        )));
+    }
+    Ok(())
+}
+
 // ==================== Config Routes ====================
 
 /// GET /api/v1/config (Admin only)
@@ -41,6 +66,11 @@ async fn update_config(
     State(state): State<AppState>,
     Json(request): Json<UpdateConfigRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // Validate all entries first
+    for entry in &request.entries {
+        validate_config_entry(&entry.key, &entry.value)?;
+    }
+
     info!("Updating {} config entries", request.entries.len());
 
     for entry in &request.entries {
@@ -58,11 +88,10 @@ async fn get_config_key(
     State(state): State<AppState>,
     Path(key): Path<String>,
 ) -> Result<Json<ConfigEntryResponse>, ApiError> {
-    let entries = state.db.list_config().await?;
-
-    let entry = entries
-        .into_iter()
-        .find(|e| e.key == key)
+    let entry = state
+        .db
+        .get_config_entry(&key)
+        .await?
         .ok_or_else(|| ApiError::NotFound(format!("Config key: {}", key)))?;
 
     Ok(Json(ConfigEntryResponse {

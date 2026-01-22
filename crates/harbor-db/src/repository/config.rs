@@ -18,6 +18,22 @@ impl Database {
         Ok(result.map(|row| row.get("value")))
     }
 
+    /// Get a config entry with metadata
+    pub async fn get_config_entry(&self, key: &str) -> Result<Option<ConfigEntry>, DbError> {
+        let result = sqlx::query("SELECT key, value, updated_at FROM config WHERE key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(result.map(|row| ConfigEntry {
+            key: row.get("key"),
+            value: row.get("value"),
+            updated_at: chrono::DateTime::parse_from_rfc3339(row.get("updated_at"))
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now()),
+        }))
+    }
+
     /// Set a config value
     pub async fn set_config(&self, key: &str, value: &str) -> Result<(), DbError> {
         let now = Utc::now();

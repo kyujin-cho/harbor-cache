@@ -16,6 +16,52 @@ use crate::state::AppState;
 use super::auth::RequireAdmin;
 use super::types::{CreateUserRequest, UpdateUserRequest, UserResponse};
 
+// ==================== Input Validation ====================
+
+/// Maximum allowed username length
+const MAX_USERNAME_LENGTH: usize = 64;
+/// Maximum allowed password length
+const MAX_PASSWORD_LENGTH: usize = 256;
+/// Minimum allowed password length
+const MIN_PASSWORD_LENGTH: usize = 8;
+
+/// Validate username format and length
+fn validate_username(username: &str) -> Result<(), ApiError> {
+    if username.is_empty() {
+        return Err(ApiError::BadRequest("Username cannot be empty".to_string()));
+    }
+    if username.len() > MAX_USERNAME_LENGTH {
+        return Err(ApiError::BadRequest(format!(
+            "Username exceeds maximum length of {} characters",
+            MAX_USERNAME_LENGTH
+        )));
+    }
+    // Only allow alphanumeric characters, underscores, and hyphens
+    if !username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        return Err(ApiError::BadRequest(
+            "Username can only contain alphanumeric characters, underscores, and hyphens".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Validate password length
+fn validate_password(password: &str) -> Result<(), ApiError> {
+    if password.len() < MIN_PASSWORD_LENGTH {
+        return Err(ApiError::BadRequest(format!(
+            "Password must be at least {} characters long",
+            MIN_PASSWORD_LENGTH
+        )));
+    }
+    if password.len() > MAX_PASSWORD_LENGTH {
+        return Err(ApiError::BadRequest(format!(
+            "Password exceeds maximum length of {} characters",
+            MAX_PASSWORD_LENGTH
+        )));
+    }
+    Ok(())
+}
+
 // ==================== User Routes ====================
 
 /// GET /api/v1/users (Admin only)
@@ -45,6 +91,10 @@ async fn create_user(
     State(state): State<AppState>,
     Json(request): Json<CreateUserRequest>,
 ) -> Result<(StatusCode, Json<UserResponse>), ApiError> {
+    // Validate inputs
+    validate_username(&request.username)?;
+    validate_password(&request.password)?;
+
     debug!("Creating user: {}", request.username);
 
     let role = UserRole::from_str(&request.role)
@@ -121,6 +171,7 @@ async fn update_user(
 
     // Update password if provided
     if let Some(password) = &request.password {
+        validate_password(password)?;
         let password_hash = hash_password(password)?;
         state.db.update_user_password(id, &password_hash).await?;
     }

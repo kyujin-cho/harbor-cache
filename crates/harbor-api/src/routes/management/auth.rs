@@ -80,6 +80,33 @@ where
     }
 }
 
+// ==================== Input Validation ====================
+
+/// Maximum allowed username length
+const MAX_USERNAME_LENGTH: usize = 64;
+/// Maximum allowed password length (prevent DoS with very large passwords)
+const MAX_PASSWORD_LENGTH: usize = 256;
+
+/// Validate username format and length
+fn validate_username(username: &str) -> Result<(), ApiError> {
+    if username.is_empty() {
+        return Err(ApiError::BadRequest("Username cannot be empty".to_string()));
+    }
+    if username.len() > MAX_USERNAME_LENGTH {
+        return Err(ApiError::BadRequest(format!(
+            "Username exceeds maximum length of {} characters",
+            MAX_USERNAME_LENGTH
+        )));
+    }
+    // Only allow alphanumeric characters, underscores, and hyphens
+    if !username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        return Err(ApiError::BadRequest(
+            "Username can only contain alphanumeric characters, underscores, and hyphens".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 // ==================== Auth Routes ====================
 
 /// POST /api/v1/auth/login
@@ -87,19 +114,40 @@ async fn login(
     State(state): State<AppState>,
     Json(request): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
+    // Validate input lengths to prevent DoS
+    validate_username(&request.username)?;
+    if request.password.len() > MAX_PASSWORD_LENGTH {
+        return Err(ApiError::BadRequest(format!(
+            "Password exceeds maximum length of {} characters",
+            MAX_PASSWORD_LENGTH
+        )));
+    }
+
     debug!("Login attempt for user: {}", request.username);
 
-    // Find user
-    let user = state
+    // Find user - but don't return early to prevent timing attacks
+    let user_result = state
         .db
         .get_user_by_username(&request.username)
-        .await?
-        .ok_or(ApiError::Unauthorized)?;
+        .await?;
 
-    // Verify password
-    if !verify_password(&request.password, &user.password_hash)? {
-        return Err(ApiError::Unauthorized);
-    }
+    // Verify password - always perform verification to prevent timing attacks
+    // Use a dummy hash when user doesn't exist to maintain constant-time behavior
+    // This dummy hash is a valid Argon2 hash that will always fail verification
+    const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$dGltaW5nX2F0dGFja19wcmV2ZW50aW9u$K8rI5T7VdQ8xkO0GqK5K2w";
+
+    let (hash_to_verify, user) = match user_result {
+        Some(u) => (u.password_hash.clone(), Some(u)),
+        None => (DUMMY_HASH.to_string(), None),
+    };
+
+    let password_valid = verify_password(&request.password, &hash_to_verify)?;
+
+    // Return unauthorized if user doesn't exist or password is invalid
+    let user = match (user, password_valid) {
+        (Some(u), true) => u,
+        _ => return Err(ApiError::Unauthorized),
+    };
 
     // Generate token
     let token = state.jwt.generate_token(user.id, &user.username, user.role.as_str())?;
