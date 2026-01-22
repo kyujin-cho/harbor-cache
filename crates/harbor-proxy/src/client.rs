@@ -53,12 +53,6 @@ impl HarborClient {
         Ok(Self { config, client })
     }
 
-    /// Get the registry URL for OCI operations
-    #[allow(dead_code)]
-    fn registry_url(&self) -> String {
-        format!("{}/v2/{}", self.config.url, self.config.registry)
-    }
-
     /// Parse WWW-Authenticate header and fetch token with proper scope
     async fn fetch_token_for_scope(&self, www_auth: &str) -> Result<String, ProxyError> {
         // Parse: Bearer realm="https://...",service="harbor-registry",scope="..."

@@ -2,6 +2,26 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
+
+/// Error type for parsing models from strings
+#[derive(Debug, Clone)]
+pub enum ParseError {
+    InvalidEntryType(String),
+    InvalidUserRole(String),
+}
+
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParseError::InvalidEntryType(s) => write!(f, "Invalid entry type: {}", s),
+            ParseError::InvalidUserRole(s) => write!(f, "Invalid user role: {}", s),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
 
 /// Cache entry type
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -18,12 +38,16 @@ impl EntryType {
             EntryType::Blob => "blob",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Option<Self> {
+impl FromStr for EntryType {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "manifest" => Some(EntryType::Manifest),
-            "blob" => Some(EntryType::Blob),
-            _ => None,
+            "manifest" => Ok(EntryType::Manifest),
+            "blob" => Ok(EntryType::Blob),
+            _ => Err(ParseError::InvalidEntryType(s.to_string())),
         }
     }
 }
@@ -62,21 +86,25 @@ impl UserRole {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "admin" => Some(UserRole::Admin),
-            "read-write" => Some(UserRole::ReadWrite),
-            "read-only" => Some(UserRole::ReadOnly),
-            _ => None,
-        }
-    }
-
     pub fn can_write(&self) -> bool {
         matches!(self, UserRole::Admin | UserRole::ReadWrite)
     }
 
     pub fn is_admin(&self) -> bool {
         matches!(self, UserRole::Admin)
+    }
+}
+
+impl FromStr for UserRole {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "admin" => Ok(UserRole::Admin),
+            "read-write" => Ok(UserRole::ReadWrite),
+            "read-only" => Ok(UserRole::ReadOnly),
+            _ => Err(ParseError::InvalidUserRole(s.to_string())),
+        }
     }
 }
 

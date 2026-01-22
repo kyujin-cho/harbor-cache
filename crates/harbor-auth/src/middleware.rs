@@ -28,7 +28,7 @@ impl AuthUser {
         Self {
             id: claims.sub.parse().unwrap_or(0),
             username: claims.username.clone(),
-            role: UserRole::from_str(&claims.role).unwrap_or(UserRole::ReadOnly),
+            role: claims.role.parse().unwrap_or(UserRole::ReadOnly),
         }
     }
 }

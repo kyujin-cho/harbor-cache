@@ -9,7 +9,7 @@ pub mod repository;
 
 pub use error::DbError;
 pub use models::*;
-pub use repository::Database;
+pub use repository::{CacheStats, Database};
 
 /// Re-export sqlx types for convenience
 pub use sqlx::SqlitePool;

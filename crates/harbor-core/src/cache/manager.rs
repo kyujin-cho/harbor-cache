@@ -2,7 +2,7 @@
 
 use bytes::Bytes;
 use chrono::{Duration, Utc};
-use harbor_db::{CacheEntry, Database, EntryType, NewCacheEntry};
+use harbor_db::{CacheEntry, CacheStats, Database, EntryType, NewCacheEntry};
 use harbor_storage::StorageBackend;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -30,17 +30,6 @@ impl Default for CacheConfig {
             eviction_policy: EvictionPolicy::Lru,
         }
     }
-}
-
-/// Cache statistics
-#[derive(Debug, Clone, Default)]
-pub struct CacheStats {
-    pub total_size: u64,
-    pub entry_count: u64,
-    pub manifest_count: u64,
-    pub blob_count: u64,
-    pub hit_count: u64,
-    pub miss_count: u64,
 }
 
 /// Cache manager for handling blob and manifest caching
@@ -73,14 +62,14 @@ impl CacheManager {
 
     /// Get cache statistics
     pub async fn stats(&self) -> CacheStats {
-        let mut stats = self.stats.read().await.clone();
+        let mut stats: CacheStats = self.stats.read().await.clone();
 
         // Update from database
         if let Ok(db_stats) = self.db.get_cache_stats().await {
-            stats.total_size = db_stats.total_size as u64;
-            stats.entry_count = db_stats.entry_count as u64;
-            stats.manifest_count = db_stats.manifest_count as u64;
-            stats.blob_count = db_stats.blob_count as u64;
+            stats.total_size = db_stats.total_size;
+            stats.entry_count = db_stats.entry_count;
+            stats.manifest_count = db_stats.manifest_count;
+            stats.blob_count = db_stats.blob_count;
         }
 
         stats

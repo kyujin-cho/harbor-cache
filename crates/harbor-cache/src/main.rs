@@ -19,7 +19,7 @@ mod config;
 use config::Config;
 use harbor_api::{create_router, AppState, MetricsHandle};
 use harbor_auth::JwtManager;
-use harbor_core::{spawn_cleanup_task, CacheConfig, CacheManager, EvictionPolicy, RegistryService};
+use harbor_core::{spawn_cleanup_task, CacheConfig, CacheManager, RegistryService};
 use harbor_db::Database;
 use harbor_proxy::{HarborClient, HarborClientConfig};
 use harbor_storage::{LocalStorage, S3Config, S3Storage, StorageBackend};
@@ -107,8 +107,7 @@ async fn main() -> Result<()> {
     let cache_config = CacheConfig {
         max_size: config.cache.max_size,
         retention_days: config.cache.retention_days,
-        eviction_policy: EvictionPolicy::from_str(&config.cache.eviction_policy)
-            .unwrap_or_default(),
+        eviction_policy: config.cache.eviction_policy.parse().unwrap_or_default(),
     };
     let cache = Arc::new(CacheManager::new(db.clone(), storage.clone(), cache_config));
 
