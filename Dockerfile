@@ -4,7 +4,7 @@
 # Run:   docker run -p 5001:5001 -v ./config:/app/config -v ./data:/app/data harbor-cache
 
 # Build stage
-FROM rust:1.84-slim AS builder
+FROM rust:1.85-slim AS builder
 
 WORKDIR /build
 
