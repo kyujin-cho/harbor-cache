@@ -6,6 +6,7 @@
 pub mod error;
 pub mod models;
 pub mod repository;
+pub mod utils;
 
 pub use error::DbError;
 pub use models::*;

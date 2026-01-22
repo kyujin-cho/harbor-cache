@@ -1,7 +1,9 @@
 //! Database models
 
 use chrono::{DateTime, Utc};
+use crate::utils::parse_datetime_or_now;
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use std::fmt;
 use std::str::FromStr;
 
@@ -165,4 +167,70 @@ pub struct NewUploadSession {
     pub id: String,
     pub repository: String,
     pub temp_path: String,
+}
+
+// ==================== TryFrom Implementations ====================
+
+impl TryFrom<&sqlx::sqlite::SqliteRow> for CacheEntry {
+    type Error = sqlx::Error;
+
+    fn try_from(row: &sqlx::sqlite::SqliteRow) -> Result<Self, Self::Error> {
+        let entry_type_str: String = row.try_get("entry_type")?;
+        Ok(CacheEntry {
+            id: row.try_get("id")?,
+            entry_type: EntryType::from_str(&entry_type_str).unwrap_or(EntryType::Blob),
+            repository: row.try_get("repository")?,
+            reference: row.try_get("reference")?,
+            digest: row.try_get("digest")?,
+            content_type: row.try_get("content_type")?,
+            size: row.try_get("size")?,
+            created_at: parse_datetime_or_now(&row.try_get::<String, _>("created_at")?),
+            last_accessed_at: parse_datetime_or_now(&row.try_get::<String, _>("last_accessed_at")?),
+            access_count: row.try_get("access_count")?,
+            storage_path: row.try_get("storage_path")?,
+        })
+    }
+}
+
+impl TryFrom<&sqlx::sqlite::SqliteRow> for User {
+    type Error = sqlx::Error;
+
+    fn try_from(row: &sqlx::sqlite::SqliteRow) -> Result<Self, Self::Error> {
+        let role_str: String = row.try_get("role")?;
+        Ok(User {
+            id: row.try_get("id")?,
+            username: row.try_get("username")?,
+            password_hash: row.try_get("password_hash")?,
+            role: UserRole::from_str(&role_str).unwrap_or(UserRole::ReadOnly),
+            created_at: parse_datetime_or_now(&row.try_get::<String, _>("created_at")?),
+            updated_at: parse_datetime_or_now(&row.try_get::<String, _>("updated_at")?),
+        })
+    }
+}
+
+impl TryFrom<&sqlx::sqlite::SqliteRow> for UploadSession {
+    type Error = sqlx::Error;
+
+    fn try_from(row: &sqlx::sqlite::SqliteRow) -> Result<Self, Self::Error> {
+        Ok(UploadSession {
+            id: row.try_get("id")?,
+            repository: row.try_get("repository")?,
+            started_at: parse_datetime_or_now(&row.try_get::<String, _>("started_at")?),
+            last_chunk_at: parse_datetime_or_now(&row.try_get::<String, _>("last_chunk_at")?),
+            bytes_received: row.try_get("bytes_received")?,
+            temp_path: row.try_get("temp_path")?,
+        })
+    }
+}
+
+impl TryFrom<&sqlx::sqlite::SqliteRow> for ConfigEntry {
+    type Error = sqlx::Error;
+
+    fn try_from(row: &sqlx::sqlite::SqliteRow) -> Result<Self, Self::Error> {
+        Ok(ConfigEntry {
+            key: row.try_get("key")?,
+            value: row.try_get("value")?,
+            updated_at: parse_datetime_or_now(&row.try_get::<String, _>("updated_at")?),
+        })
+    }
 }
