@@ -1,9 +1,9 @@
 //! Cache management routes
 
 use axum::{
+    Json, Router,
     extract::State,
     routing::{delete, get, post},
-    Json, Router,
 };
 use harbor_db::utils::format_bytes;
 use tracing::info;

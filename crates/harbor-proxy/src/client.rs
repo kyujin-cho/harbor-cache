@@ -228,16 +228,18 @@ impl HarborClient {
     /// Check if upstream is reachable
     pub async fn ping(&self) -> Result<bool, ProxyError> {
         let url = format!("{}/v2/", self.config.url);
-        let response = self.authenticated_request("GET", &url, vec![], None).await?;
+        let response = self
+            .authenticated_request("GET", &url, vec![], None)
+            .await?;
         Ok(response.status().is_success())
     }
 
     /// Get the full repository path, handling the registry prefix
     fn full_repository(&self, repository: &str) -> String {
-        // If repository already starts with registry prefix, don't double it
-        if repository.starts_with(&format!("{}/", self.config.registry)) {
-            repository.to_string()
-        } else if repository == self.config.registry {
+        // If repository already starts with registry prefix or equals registry, don't modify it
+        if repository.starts_with(&format!("{}/", self.config.registry))
+            || repository == self.config.registry
+        {
             repository.to_string()
         } else {
             format!("{}/{}", self.config.registry, repository)
@@ -313,10 +315,7 @@ impl HarborClient {
         digest: &str,
     ) -> Result<(Bytes, u64), ProxyError> {
         let full_repo = self.full_repository(repository);
-        let url = format!(
-            "{}/v2/{}/blobs/{}",
-            self.config.url, full_repo, digest
-        );
+        let url = format!("{}/v2/{}/blobs/{}", self.config.url, full_repo, digest);
 
         debug!("Fetching blob: {}", url);
 
@@ -351,10 +350,7 @@ impl HarborClient {
     /// Check if a blob exists
     pub async fn blob_exists(&self, repository: &str, digest: &str) -> Result<bool, ProxyError> {
         let full_repo = self.full_repository(repository);
-        let url = format!(
-            "{}/v2/{}/blobs/{}",
-            self.config.url, full_repo, digest
-        );
+        let url = format!("{}/v2/{}/blobs/{}", self.config.url, full_repo, digest);
 
         debug!("Checking blob existence: {}", url);
 
@@ -380,10 +376,7 @@ impl HarborClient {
 
         // Start upload
         let full_repo = self.full_repository(repository);
-        let url = format!(
-            "{}/v2/{}/blobs/uploads/",
-            self.config.url, full_repo
-        );
+        let url = format!("{}/v2/{}/blobs/uploads/", self.config.url, full_repo);
 
         debug!("Starting blob upload to: {}", url);
 
@@ -411,10 +404,17 @@ impl HarborClient {
         let upload_url = if location.starts_with("http") {
             format!("{}{}digest={}", location, separator, digest)
         } else {
-            format!("{}{}{}digest={}", self.config.url, location, separator, digest)
+            format!(
+                "{}{}{}digest={}",
+                self.config.url, location, separator, digest
+            )
         };
 
-        debug!("Completing blob upload: {} ({} bytes)", upload_url, data.len());
+        debug!(
+            "Completing blob upload: {} ({} bytes)",
+            upload_url,
+            data.len()
+        );
 
         let headers = vec![("Content-Type", "application/octet-stream")];
 

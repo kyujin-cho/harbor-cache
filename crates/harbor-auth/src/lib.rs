@@ -10,5 +10,5 @@ pub mod password;
 
 pub use error::AuthError;
 pub use jwt::{Claims, JwtManager};
-pub use middleware::{auth_middleware, require_admin, require_write, AuthUser};
+pub use middleware::{AuthUser, auth_middleware, require_admin, require_write};
 pub use password::{hash_password, verify_password};

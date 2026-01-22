@@ -43,17 +43,41 @@ impl IntoResponse for ApiError {
         let (status, code, message) = match &self {
             ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
-            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", "Unauthorized".to_string()),
+            ApiError::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
+                "Unauthorized".to_string(),
+            ),
             ApiError::Forbidden => (StatusCode::FORBIDDEN, "FORBIDDEN", "Forbidden".to_string()),
-            ApiError::MethodNotAllowed => (StatusCode::METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "Method not allowed".to_string()),
-            ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", msg.clone()),
+            ApiError::MethodNotAllowed => (
+                StatusCode::METHOD_NOT_ALLOWED,
+                "METHOD_NOT_ALLOWED",
+                "Method not allowed".to_string(),
+            ),
+            ApiError::Internal(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                msg.clone(),
+            ),
             ApiError::Core(e) => match e {
-                harbor_core::CoreError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
-                _ => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", e.to_string()),
+                harbor_core::CoreError::NotFound(msg) => {
+                    (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone())
+                }
+                _ => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    e.to_string(),
+                ),
             },
             ApiError::Database(e) => match e {
-                harbor_db::DbError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
-                _ => (StatusCode::INTERNAL_SERVER_ERROR, "DATABASE_ERROR", e.to_string()),
+                harbor_db::DbError::NotFound(msg) => {
+                    (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone())
+                }
+                _ => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "DATABASE_ERROR",
+                    e.to_string(),
+                ),
             },
             ApiError::Auth(e) => {
                 let status = match e {
@@ -61,10 +85,16 @@ impl IntoResponse for ApiError {
                     _ => StatusCode::UNAUTHORIZED,
                 };
                 (status, "AUTH_ERROR", e.to_string())
-            },
+            }
             ApiError::Storage(e) => match e {
-                harbor_storage::StorageError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
-                _ => (StatusCode::INTERNAL_SERVER_ERROR, "STORAGE_ERROR", e.to_string()),
+                harbor_storage::StorageError::NotFound(msg) => {
+                    (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone())
+                }
+                _ => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "STORAGE_ERROR",
+                    e.to_string(),
+                ),
             },
         };
 

@@ -55,15 +55,18 @@ impl RegistryService {
         debug!("Getting manifest: {}:{}", repository, reference);
 
         // Check cache first (by digest if available)
-        if reference.starts_with("sha256:") {
-            if let Some((data, entry)) = self.cache.get(reference).await? {
-                info!("Cache hit for manifest: {}", reference);
-                return Ok((data, entry.content_type, reference.to_string()));
-            }
+        if reference.starts_with("sha256:")
+            && let Some((data, entry)) = self.cache.get(reference).await?
+        {
+            info!("Cache hit for manifest: {}", reference);
+            return Ok((data, entry.content_type, reference.to_string()));
         }
 
         // Cache miss - fetch from upstream
-        info!("Cache miss for manifest: {}:{}, fetching from upstream", repository, reference);
+        info!(
+            "Cache miss for manifest: {}:{}, fetching from upstream",
+            repository, reference
+        );
 
         let (data, content_type, digest) = self
             .upstream
@@ -106,17 +109,19 @@ impl RegistryService {
         reference: &str,
     ) -> Result<Option<(String, String, i64)>, CoreError> {
         // Check cache first if reference is a digest
-        if reference.starts_with("sha256:") {
-            if let Some(entry) = self.cache.get_metadata(reference).await? {
-                return Ok(Some((entry.content_type, reference.to_string(), entry.size)));
-            }
+        if reference.starts_with("sha256:")
+            && let Some(entry) = self.cache.get_metadata(reference).await?
+        {
+            return Ok(Some((
+                entry.content_type,
+                reference.to_string(),
+                entry.size,
+            )));
         }
 
         // Try to get from upstream (this will cache it)
         match self.get_manifest(repository, reference).await {
-            Ok((data, content_type, digest)) => {
-                Ok(Some((content_type, digest, data.len() as i64)))
-            }
+            Ok((data, content_type, digest)) => Ok(Some((content_type, digest, data.len() as i64))),
             Err(CoreError::NotFound(_)) => Ok(None),
             Err(e) => Err(e),
         }
@@ -160,18 +165,17 @@ impl RegistryService {
             )
             .await?;
 
-        info!("Pushed manifest: {}:{} -> {}", repository, reference, final_digest);
+        info!(
+            "Pushed manifest: {}:{} -> {}",
+            repository, reference, final_digest
+        );
         Ok(final_digest)
     }
 
     // ==================== Blob Operations ====================
 
     /// Get a blob (cache-aside pattern)
-    pub async fn get_blob(
-        &self,
-        repository: &str,
-        digest: &str,
-    ) -> Result<Bytes, CoreError> {
+    pub async fn get_blob(&self, repository: &str, digest: &str) -> Result<Bytes, CoreError> {
         debug!("Getting blob: {}", digest);
 
         // Check cache first
@@ -254,20 +258,21 @@ impl RegistryService {
     }
 
     /// Get upload session info
-    pub async fn get_upload_session(&self, session_id: &str) -> Result<Option<UploadSession>, CoreError> {
+    pub async fn get_upload_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<UploadSession>, CoreError> {
         Ok(self.db.get_upload_session(session_id).await?)
     }
 
     /// Append data to an upload session
-    pub async fn append_upload(
-        &self,
-        session_id: &str,
-        data: Bytes,
-    ) -> Result<i64, CoreError> {
+    pub async fn append_upload(&self, session_id: &str, data: Bytes) -> Result<i64, CoreError> {
         debug!("Appending {} bytes to upload: {}", data.len(), session_id);
 
         let new_size = self.storage.append_chunk(session_id, data).await?;
-        self.db.update_upload_session(session_id, new_size as i64).await?;
+        self.db
+            .update_upload_session(session_id, new_size as i64)
+            .await?;
 
         Ok(new_size as i64)
     }
@@ -289,7 +294,10 @@ impl RegistryService {
             .ok_or_else(|| CoreError::NotFound(format!("Upload session: {}", session_id)))?;
 
         // Complete the chunked upload (validates digest)
-        let storage_path = self.storage.complete_chunked_upload(session_id, digest).await?;
+        let storage_path = self
+            .storage
+            .complete_chunked_upload(session_id, digest)
+            .await?;
 
         // Get the size
         let size = self.storage.size(digest).await?;
@@ -298,7 +306,9 @@ impl RegistryService {
         let data = self.storage.read(digest).await?;
 
         // Push to upstream
-        self.upstream.push_blob(repository, digest, data.clone()).await?;
+        self.upstream
+            .push_blob(repository, digest, data.clone())
+            .await?;
 
         // Create cache entry
         self.db
@@ -337,7 +347,10 @@ impl RegistryService {
         digest: &str,
         from: &str,
     ) -> Result<bool, CoreError> {
-        debug!("Attempting to mount blob {} from {} to {}", digest, from, repository);
+        debug!(
+            "Attempting to mount blob {} from {} to {}",
+            digest, from, repository
+        );
 
         // Check if blob exists in cache
         if self.cache.exists(digest).await? {

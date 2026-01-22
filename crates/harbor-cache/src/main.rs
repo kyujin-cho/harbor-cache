@@ -6,20 +6,20 @@ use std::fs::File;
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use tokio_rustls::rustls::ServerConfig as RustlsServerConfig;
 use tokio_rustls::TlsAcceptor;
+use tokio_rustls::rustls::ServerConfig as RustlsServerConfig;
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tower::Service;
 use tower_http::trace::TraceLayer;
 use tracing::info;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod config;
 
 use config::Config;
-use harbor_api::{create_router, AppState, MetricsHandle};
+use harbor_api::{AppState, MetricsHandle, create_router};
 use harbor_auth::JwtManager;
-use harbor_core::{spawn_cleanup_task, CacheConfig, CacheManager, RegistryService};
+use harbor_core::{CacheConfig, CacheManager, RegistryService, spawn_cleanup_task};
 use harbor_db::Database;
 use harbor_proxy::{HarborClient, HarborClientConfig};
 use harbor_storage::{LocalStorage, S3Config, S3Storage, StorageBackend};
@@ -75,8 +75,18 @@ async fn main() -> Result<()> {
     let storage: Arc<dyn StorageBackend> = match config.storage.backend.as_str() {
         "s3" => {
             let s3_config = S3Config {
-                bucket: config.storage.s3.bucket.clone().unwrap_or_else(|| "harbor-cache".to_string()),
-                region: config.storage.s3.region.clone().unwrap_or_else(|| "us-east-1".to_string()),
+                bucket: config
+                    .storage
+                    .s3
+                    .bucket
+                    .clone()
+                    .unwrap_or_else(|| "harbor-cache".to_string()),
+                region: config
+                    .storage
+                    .s3
+                    .region
+                    .clone()
+                    .unwrap_or_else(|| "us-east-1".to_string()),
                 endpoint: config.storage.s3.endpoint.clone(),
                 access_key_id: config.storage.s3.access_key.clone(),
                 secret_access_key: config.storage.s3.secret_key.clone(),
@@ -89,7 +99,10 @@ async fn main() -> Result<()> {
         _ => {
             // Default to local storage
             tokio::fs::create_dir_all(&config.storage.local.path).await?;
-            info!("Using local storage backend: path={}", config.storage.local.path);
+            info!(
+                "Using local storage backend: path={}",
+                config.storage.local.path
+            );
             Arc::new(LocalStorage::new(&config.storage.local.path).await?)
         }
     };
@@ -126,21 +139,13 @@ async fn main() -> Result<()> {
     let jwt = Arc::new(JwtManager::new(&config.auth.jwt_secret, 24));
 
     // Create application state
-    let state = AppState::new(
-        db,
-        cache,
-        registry,
-        storage,
-        jwt,
-        config.auth.enabled,
-    );
+    let state = AppState::new(db, cache, registry, storage, jwt, config.auth.enabled);
 
     // Initialize Prometheus metrics
     let metrics_handle = init_metrics();
 
     // Create router
-    let app = create_router(state, metrics_handle.map(Arc::new))
-        .layer(TraceLayer::new_for_http());
+    let app = create_router(state, metrics_handle.map(Arc::new)).layer(TraceLayer::new_for_http());
 
     // Determine bind address
     let bind_addr = args.bind.unwrap_or(config.server.bind_address);
@@ -213,8 +218,7 @@ async fn main() -> Result<()> {
 
 /// Initialize logging
 fn init_logging(level: &str) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
 
     tracing_subscriber::registry()
         .with(fmt::layer())
@@ -235,22 +239,10 @@ fn init_metrics() -> Option<MetricsHandle> {
                 "harbor_cache_requests_total",
                 "Total number of cache requests"
             );
-            metrics::describe_counter!(
-                "harbor_cache_hits_total",
-                "Total number of cache hits"
-            );
-            metrics::describe_counter!(
-                "harbor_cache_misses_total",
-                "Total number of cache misses"
-            );
-            metrics::describe_gauge!(
-                "harbor_cache_size_bytes",
-                "Current cache size in bytes"
-            );
-            metrics::describe_gauge!(
-                "harbor_cache_entries",
-                "Current number of cache entries"
-            );
+            metrics::describe_counter!("harbor_cache_hits_total", "Total number of cache hits");
+            metrics::describe_counter!("harbor_cache_misses_total", "Total number of cache misses");
+            metrics::describe_gauge!("harbor_cache_size_bytes", "Current cache size in bytes");
+            metrics::describe_gauge!("harbor_cache_entries", "Current number of cache entries");
             metrics::describe_histogram!(
                 "harbor_cache_request_duration_seconds",
                 "Request duration in seconds"
@@ -301,8 +293,8 @@ fn load_tls_config(tls_config: &config::TlsConfig) -> Result<RustlsServerConfig>
     }
 
     // Load private key
-    let key_file = File::open(key_path)
-        .with_context(|| format!("Failed to open key file: {}", key_path))?;
+    let key_file =
+        File::open(key_path).with_context(|| format!("Failed to open key file: {}", key_path))?;
     let mut key_reader = BufReader::new(key_file);
     let key = load_private_key(&mut key_reader)
         .with_context(|| format!("Failed to parse key file: {}", key_path))?;
@@ -313,7 +305,10 @@ fn load_tls_config(tls_config: &config::TlsConfig) -> Result<RustlsServerConfig>
         .with_single_cert(certs, key)
         .context("Failed to build TLS configuration")?;
 
-    info!("TLS configuration loaded from {} and {}", cert_path, key_path);
+    info!(
+        "TLS configuration loaded from {} and {}",
+        cert_path, key_path
+    );
     Ok(config)
 }
 

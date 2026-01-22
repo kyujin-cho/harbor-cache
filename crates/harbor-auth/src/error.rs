@@ -41,9 +41,16 @@ impl IntoResponse for AuthError {
             AuthError::InvalidCredentials => (StatusCode::UNAUTHORIZED, "Invalid credentials"),
             AuthError::InvalidToken => (StatusCode::UNAUTHORIZED, "Invalid token"),
             AuthError::TokenExpired => (StatusCode::UNAUTHORIZED, "Token expired"),
-            AuthError::MissingAuthHeader => (StatusCode::UNAUTHORIZED, "Missing authorization header"),
-            AuthError::InvalidAuthHeader => (StatusCode::UNAUTHORIZED, "Invalid authorization header format"),
-            AuthError::InsufficientPermissions => (StatusCode::FORBIDDEN, "Insufficient permissions"),
+            AuthError::MissingAuthHeader => {
+                (StatusCode::UNAUTHORIZED, "Missing authorization header")
+            }
+            AuthError::InvalidAuthHeader => (
+                StatusCode::UNAUTHORIZED,
+                "Invalid authorization header format",
+            ),
+            AuthError::InsufficientPermissions => {
+                (StatusCode::FORBIDDEN, "Insufficient permissions")
+            }
             AuthError::UserNotFound => (StatusCode::NOT_FOUND, "User not found"),
             AuthError::PasswordHash(_) => (StatusCode::INTERNAL_SERVER_ERROR, "Internal error"),
             AuthError::Jwt(_) => (StatusCode::UNAUTHORIZED, "Invalid token"),

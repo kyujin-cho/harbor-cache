@@ -1,10 +1,10 @@
 //! Configuration management routes
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     routing::{delete, get, put},
-    Json, Router,
 };
 use tracing::{debug, info};
 

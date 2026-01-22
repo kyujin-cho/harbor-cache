@@ -1,10 +1,10 @@
 //! User management routes
 
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     routing::{delete, get, post, put},
-    Json, Router,
 };
 use harbor_auth::hash_password;
 use harbor_db::{NewUser, UserRole};
@@ -47,7 +47,9 @@ async fn create_user(
 ) -> Result<(StatusCode, Json<UserResponse>), ApiError> {
     debug!("Creating user: {}", request.username);
 
-    let role: UserRole = request.role.parse()
+    let role: UserRole = request
+        .role
+        .parse()
         .map_err(|_| ApiError::BadRequest(format!("Invalid role: {}", request.role)))?;
 
     let password_hash = hash_password(&request.password)?;
@@ -114,7 +116,8 @@ async fn update_user(
 
     // Update role if provided
     if let Some(role_str) = &request.role {
-        let role: UserRole = role_str.parse()
+        let role: UserRole = role_str
+            .parse()
             .map_err(|_| ApiError::BadRequest(format!("Invalid role: {}", role_str)))?;
         state.db.update_user_role(id, role).await?;
     }

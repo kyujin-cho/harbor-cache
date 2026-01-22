@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tracing::{debug, info};
 
-use crate::backend::{compute_sha256, parse_digest, ByteStream, StorageBackend};
+use crate::backend::{ByteStream, StorageBackend, compute_sha256, parse_digest};
 use crate::error::StorageError;
 
 /// S3 storage configuration
@@ -120,9 +120,8 @@ impl S3Storage {
             format!("{}/blobs/{}/{}/{}", self.prefix, algorithm, shard, hash)
         };
 
-        ObjectPath::parse(&path).map_err(|e| {
-            StorageError::InvalidDigest(format!("Invalid path: {}", e))
-        })
+        ObjectPath::parse(&path)
+            .map_err(|e| StorageError::InvalidDigest(format!("Invalid path: {}", e)))
     }
 
     /// Get the object path for an upload session
@@ -152,13 +151,9 @@ impl StorageBackend for S3Storage {
     async fn size(&self, digest: &str) -> Result<u64, StorageError> {
         let path = self.blob_path(digest)?;
 
-        let meta = self.store.head(&path).await.map_err(|e| {
-            match e {
-                object_store::Error::NotFound { .. } => {
-                    StorageError::NotFound(digest.to_string())
-                }
-                _ => StorageError::S3(e.to_string()),
-            }
+        let meta = self.store.head(&path).await.map_err(|e| match e {
+            object_store::Error::NotFound { .. } => StorageError::NotFound(digest.to_string()),
+            _ => StorageError::S3(e.to_string()),
         })?;
 
         Ok(meta.size as u64)
@@ -168,18 +163,15 @@ impl StorageBackend for S3Storage {
         let path = self.blob_path(digest)?;
         debug!("Reading blob from S3: {:?}", path);
 
-        let result = self.store.get(&path).await.map_err(|e| {
-            match e {
-                object_store::Error::NotFound { .. } => {
-                    StorageError::NotFound(digest.to_string())
-                }
-                _ => StorageError::S3(e.to_string()),
-            }
+        let result = self.store.get(&path).await.map_err(|e| match e {
+            object_store::Error::NotFound { .. } => StorageError::NotFound(digest.to_string()),
+            _ => StorageError::S3(e.to_string()),
         })?;
 
-        let bytes = result.bytes().await.map_err(|e| {
-            StorageError::S3(format!("Failed to read bytes: {}", e))
-        })?;
+        let bytes = result
+            .bytes()
+            .await
+            .map_err(|e| StorageError::S3(format!("Failed to read bytes: {}", e)))?;
 
         Ok(bytes)
     }
@@ -193,14 +185,14 @@ impl StorageBackend for S3Storage {
             end: (end + 1) as usize,
         };
 
-        let result = self.store.get_range(&path, range).await.map_err(|e| {
-            match e {
-                object_store::Error::NotFound { .. } => {
-                    StorageError::NotFound(digest.to_string())
-                }
+        let result = self
+            .store
+            .get_range(&path, range)
+            .await
+            .map_err(|e| match e {
+                object_store::Error::NotFound { .. } => StorageError::NotFound(digest.to_string()),
                 _ => StorageError::S3(e.to_string()),
-            }
-        })?;
+            })?;
 
         Ok(result)
     }
@@ -209,18 +201,14 @@ impl StorageBackend for S3Storage {
         let path = self.blob_path(digest)?;
         debug!("Streaming blob from S3: {:?}", path);
 
-        let result = self.store.get(&path).await.map_err(|e| {
-            match e {
-                object_store::Error::NotFound { .. } => {
-                    StorageError::NotFound(digest.to_string())
-                }
-                _ => StorageError::S3(e.to_string()),
-            }
+        let result = self.store.get(&path).await.map_err(|e| match e {
+            object_store::Error::NotFound { .. } => StorageError::NotFound(digest.to_string()),
+            _ => StorageError::S3(e.to_string()),
         })?;
 
-        let stream = result.into_stream().map_err(|e| {
-            StorageError::S3(format!("Stream error: {}", e))
-        });
+        let stream = result
+            .into_stream()
+            .map_err(|e| StorageError::S3(format!("Stream error: {}", e)));
 
         Ok(Box::pin(stream))
     }
@@ -293,9 +281,10 @@ impl StorageBackend for S3Storage {
             return Ok(false);
         }
 
-        self.store.delete(&path).await.map_err(|e| {
-            StorageError::S3(e.to_string())
-        })?;
+        self.store
+            .delete(&path)
+            .await
+            .map_err(|e| StorageError::S3(e.to_string()))?;
 
         Ok(true)
     }
@@ -328,9 +317,10 @@ impl StorageBackend for S3Storage {
         // For production, consider using S3 multipart uploads directly
 
         let existing = match self.store.get(&path).await {
-            Ok(result) => result.bytes().await.map_err(|e| {
-                StorageError::S3(format!("Failed to read existing data: {}", e))
-            })?,
+            Ok(result) => result
+                .bytes()
+                .await
+                .map_err(|e| StorageError::S3(format!("Failed to read existing data: {}", e)))?,
             Err(object_store::Error::NotFound { .. }) => Bytes::new(),
             Err(e) => return Err(StorageError::S3(e.to_string())),
         };
@@ -361,18 +351,17 @@ impl StorageBackend for S3Storage {
         );
 
         // Read uploaded data
-        let result = self.store.get(&upload_path).await.map_err(|e| {
-            match e {
-                object_store::Error::NotFound { .. } => {
-                    StorageError::NotFound(format!("Upload session: {}", session_id))
-                }
-                _ => StorageError::S3(e.to_string()),
+        let result = self.store.get(&upload_path).await.map_err(|e| match e {
+            object_store::Error::NotFound { .. } => {
+                StorageError::NotFound(format!("Upload session: {}", session_id))
             }
+            _ => StorageError::S3(e.to_string()),
         })?;
 
-        let data = result.bytes().await.map_err(|e| {
-            StorageError::S3(format!("Failed to read upload data: {}", e))
-        })?;
+        let data = result
+            .bytes()
+            .await
+            .map_err(|e| StorageError::S3(format!("Failed to read upload data: {}", e)))?;
 
         // Verify digest
         let computed = compute_sha256(&data);

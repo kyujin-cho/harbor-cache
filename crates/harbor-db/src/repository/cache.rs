@@ -50,7 +50,10 @@ impl Database {
     }
 
     /// Get a cache entry by digest
-    pub async fn get_cache_entry_by_digest(&self, digest: &str) -> Result<Option<CacheEntry>, DbError> {
+    pub async fn get_cache_entry_by_digest(
+        &self,
+        digest: &str,
+    ) -> Result<Option<CacheEntry>, DbError> {
         let result = sqlx::query(
             r#"
             SELECT id, entry_type, repository, reference, digest, content_type, size, created_at, last_accessed_at, access_count, storage_path
@@ -62,7 +65,9 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        result.map(|row| CacheEntry::try_from(&row).map_err(DbError::from)).transpose()
+        result
+            .map(|row| CacheEntry::try_from(&row).map_err(DbError::from))
+            .transpose()
     }
 
     /// Update last accessed time and increment access count
@@ -131,15 +136,18 @@ impl Database {
         let total_size = self.get_total_cache_size().await?;
         let entry_count = self.get_cache_entry_count().await?;
 
-        let manifest_count: i64 = sqlx::query("SELECT COUNT(*) as count FROM cache_entries WHERE entry_type = 'manifest'")
-            .fetch_one(&self.pool)
-            .await?
-            .get("count");
+        let manifest_count: i64 = sqlx::query(
+            "SELECT COUNT(*) as count FROM cache_entries WHERE entry_type = 'manifest'",
+        )
+        .fetch_one(&self.pool)
+        .await?
+        .get("count");
 
-        let blob_count: i64 = sqlx::query("SELECT COUNT(*) as count FROM cache_entries WHERE entry_type = 'blob'")
-            .fetch_one(&self.pool)
-            .await?
-            .get("count");
+        let blob_count: i64 =
+            sqlx::query("SELECT COUNT(*) as count FROM cache_entries WHERE entry_type = 'blob'")
+                .fetch_one(&self.pool)
+                .await?
+                .get("count");
 
         Ok(CacheStats {
             total_size,
