@@ -1,12 +1,12 @@
 //! Authentication routes and extractors
 
 use axum::{
+    Json, Router,
     extract::{FromRef, FromRequestParts, State},
     http::{header::AUTHORIZATION, request::Parts},
     routing::post,
-    Json, Router,
 };
-use harbor_auth::{verify_password, AuthUser};
+use harbor_auth::{AuthUser, verify_password};
 use harbor_db::UserRole;
 use tracing::{debug, info};
 
@@ -50,10 +50,17 @@ where
         }
 
         let token = &auth_header[7..];
-        let claims = app_state.jwt.validate_token(token).map_err(|_| ApiError::Unauthorized)?;
+        let claims = app_state
+            .jwt
+            .validate_token(token)
+            .map_err(|_| ApiError::Unauthorized)?;
         let user = AuthUser::from_claims(&claims);
 
-        debug!("Authenticated user: {} ({})", user.username, user.role.as_str());
+        debug!(
+            "Authenticated user: {} ({})",
+            user.username,
+            user.role.as_str()
+        );
         Ok(RequireAuth(user))
     }
 }
@@ -110,7 +117,9 @@ async fn login(
     }
 
     // Generate token
-    let token = state.jwt.generate_token(user.id, &user.username, user.role.as_str())?;
+    let token = state
+        .jwt
+        .generate_token(user.id, &user.username, user.role.as_str())?;
 
     info!("User {} logged in successfully", user.username);
 

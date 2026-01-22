@@ -15,8 +15,7 @@ use crate::state::{AppState, MetricsHandle};
 /// Create the main router
 pub fn create_router(state: AppState, metrics_handle: Option<Arc<MetricsHandle>>) -> Router {
     // Create static file service with SPA fallback
-    let serve_dir = ServeDir::new("static")
-        .not_found_service(ServeFile::new("static/index.html"));
+    let serve_dir = ServeDir::new("static").not_found_service(ServeFile::new("static/index.html"));
 
     let mut router = Router::new()
         // Health check

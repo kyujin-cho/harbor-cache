@@ -42,14 +42,12 @@ pub struct CacheManager {
 
 impl CacheManager {
     /// Create a new cache manager
-    pub fn new(
-        db: Database,
-        storage: Arc<dyn StorageBackend>,
-        config: CacheConfig,
-    ) -> Self {
+    pub fn new(db: Database, storage: Arc<dyn StorageBackend>, config: CacheConfig) -> Self {
         info!(
             "Initializing cache manager (max_size: {} bytes, retention: {} days, policy: {})",
-            config.max_size, config.retention_days, config.eviction_policy.as_str()
+            config.max_size,
+            config.retention_days,
+            config.eviction_policy.as_str()
         );
 
         Self {
@@ -210,10 +208,7 @@ impl CacheManager {
         }
 
         let to_free = current_size + required - self.config.max_size;
-        info!(
-            "Cache size limit reached, need to free {} bytes",
-            to_free
-        );
+        info!("Cache size limit reached, need to free {} bytes", to_free);
 
         self.evict(to_free).await
     }
@@ -341,7 +336,7 @@ pub fn spawn_cleanup_task(
     cache: Arc<CacheManager>,
     interval_hours: u64,
 ) -> tokio::task::JoinHandle<()> {
-    use tokio::time::{interval, Duration};
+    use tokio::time::{Duration, interval};
 
     info!(
         "Starting background cache cleanup task (interval: {} hours)",

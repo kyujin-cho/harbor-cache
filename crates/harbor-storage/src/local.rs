@@ -9,7 +9,7 @@ use tokio::fs::{self, File};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, info};
 
-use crate::backend::{compute_sha256, parse_digest, ByteStream, StorageBackend};
+use crate::backend::{ByteStream, StorageBackend, compute_sha256, parse_digest};
 use crate::error::StorageError;
 
 /// Local disk storage backend
@@ -138,9 +138,9 @@ impl StorageBackend for LocalStorage {
         let reader = BufReader::new(file);
         let stream = tokio_util::io::ReaderStream::new(reader);
 
-        Ok(Box::pin(stream.map(|result| {
-            result.map_err(StorageError::Io)
-        })))
+        Ok(Box::pin(
+            stream.map(|result| result.map_err(StorageError::Io)),
+        ))
     }
 
     async fn write(&self, digest: &str, data: Bytes) -> Result<String, StorageError> {

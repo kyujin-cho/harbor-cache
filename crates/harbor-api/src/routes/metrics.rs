@@ -1,6 +1,6 @@
 //! Prometheus metrics endpoint
 
-use axum::{extract::State, response::IntoResponse, routing::get, Router};
+use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use std::sync::Arc;
 
 use crate::state::MetricsHandle;

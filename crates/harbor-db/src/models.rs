@@ -1,7 +1,7 @@
 //! Database models
 
-use chrono::{DateTime, Utc};
 use crate::utils::parse_datetime_or_now;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::fmt;

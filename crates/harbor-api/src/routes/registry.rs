@@ -1,11 +1,11 @@
 //! OCI Distribution API routes
 
 use axum::{
+    Router,
     extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, head, patch, post, put},
-    Router,
 };
 use bytes::Bytes;
 use serde::Deserialize;
@@ -112,8 +112,7 @@ async fn handle_get_or_head_request(
     Path(path): Path<String>,
     method: axum::http::Method,
 ) -> Result<Response, ApiError> {
-    let req = parse_registry_path(&path)
-        .ok_or_else(|| ApiError::NotFound(path.clone()))?;
+    let req = parse_registry_path(&path).ok_or_else(|| ApiError::NotFound(path.clone()))?;
 
     match req {
         RegistryRequest::Manifest { name, reference } => {
@@ -124,20 +123,33 @@ async fn handle_get_or_head_request(
                     Some((content_type, digest, size)) => {
                         let mut response = StatusCode::OK.into_response();
                         let headers = response.headers_mut();
-                        headers.insert(header::CONTENT_TYPE, HeaderValue::from_str(&content_type).unwrap());
+                        headers.insert(
+                            header::CONTENT_TYPE,
+                            HeaderValue::from_str(&content_type).unwrap(),
+                        );
                         headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size as u64));
-                        headers.insert("Docker-Content-Digest", HeaderValue::from_str(&digest).unwrap());
+                        headers.insert(
+                            "Docker-Content-Digest",
+                            HeaderValue::from_str(&digest).unwrap(),
+                        );
                         Ok(response)
                     }
                     None => Err(ApiError::NotFound(format!("{}:{}", name, reference))),
                 }
             } else {
                 debug!("GET manifest: {}:{}", name, reference);
-                let (data, content_type, digest) = state.registry.get_manifest(&name, &reference).await?;
+                let (data, content_type, digest) =
+                    state.registry.get_manifest(&name, &reference).await?;
                 let mut response = (StatusCode::OK, data).into_response();
                 let headers = response.headers_mut();
-                headers.insert(header::CONTENT_TYPE, HeaderValue::from_str(&content_type).unwrap());
-                headers.insert("Docker-Content-Digest", HeaderValue::from_str(&digest).unwrap());
+                headers.insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_str(&content_type).unwrap(),
+                );
+                headers.insert(
+                    "Docker-Content-Digest",
+                    HeaderValue::from_str(&digest).unwrap(),
+                );
                 Ok(response)
             }
         }
@@ -149,9 +161,15 @@ async fn handle_get_or_head_request(
                     Some(s) => {
                         let mut response = StatusCode::OK.into_response();
                         let headers = response.headers_mut();
-                        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+                        headers.insert(
+                            header::CONTENT_TYPE,
+                            HeaderValue::from_static("application/octet-stream"),
+                        );
                         headers.insert(header::CONTENT_LENGTH, HeaderValue::from(s as u64));
-                        headers.insert("Docker-Content-Digest", HeaderValue::from_str(&digest).unwrap());
+                        headers.insert(
+                            "Docker-Content-Digest",
+                            HeaderValue::from_str(&digest).unwrap(),
+                        );
                         Ok(response)
                     }
                     None => Err(ApiError::NotFound(digest)),
@@ -161,8 +179,14 @@ async fn handle_get_or_head_request(
                 let data = state.registry.get_blob(&name, &digest).await?;
                 let mut response = (StatusCode::OK, data).into_response();
                 let headers = response.headers_mut();
-                headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
-                headers.insert("Docker-Content-Digest", HeaderValue::from_str(&digest).unwrap());
+                headers.insert(
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/octet-stream"),
+                );
+                headers.insert(
+                    "Docker-Content-Digest",
+                    HeaderValue::from_str(&digest).unwrap(),
+                );
                 Ok(response)
             }
         }
@@ -178,13 +202,14 @@ async fn handle_get_or_head_request(
             let mut response = StatusCode::NO_CONTENT.into_response();
             let headers = response.headers_mut();
             headers.insert(header::LOCATION, HeaderValue::from_str(&location).unwrap());
-            headers.insert("Docker-Upload-UUID", HeaderValue::from_str(&session_id).unwrap());
+            headers.insert(
+                "Docker-Upload-UUID",
+                HeaderValue::from_str(&session_id).unwrap(),
+            );
             headers.insert(header::RANGE, HeaderValue::from_str(&range).unwrap());
             Ok(response)
         }
-        RegistryRequest::StartUpload { .. } => {
-            Err(ApiError::MethodNotAllowed)
-        }
+        RegistryRequest::StartUpload { .. } => Err(ApiError::MethodNotAllowed),
     }
 }
 
@@ -196,8 +221,7 @@ async fn handle_put_request(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let req = parse_registry_path(&path)
-        .ok_or_else(|| ApiError::NotFound(path.clone()))?;
+    let req = parse_registry_path(&path).ok_or_else(|| ApiError::NotFound(path.clone()))?;
 
     match req {
         RegistryRequest::Manifest { name, reference } => {
@@ -214,7 +238,10 @@ async fn handle_put_request(
             let mut response = StatusCode::CREATED.into_response();
             let resp_headers = response.headers_mut();
             resp_headers.insert(header::LOCATION, HeaderValue::from_str(&location).unwrap());
-            resp_headers.insert("Docker-Content-Digest", HeaderValue::from_str(&digest).unwrap());
+            resp_headers.insert(
+                "Docker-Content-Digest",
+                HeaderValue::from_str(&digest).unwrap(),
+            );
             Ok(response)
         }
         RegistryRequest::Upload { name, session_id } => {
@@ -225,12 +252,18 @@ async fn handle_put_request(
             if !body.is_empty() {
                 state.registry.append_upload(&session_id, body).await?;
             }
-            state.registry.complete_upload(&name, &session_id, &digest).await?;
+            state
+                .registry
+                .complete_upload(&name, &session_id, &digest)
+                .await?;
             let location = format!("/v2/{}/blobs/{}", name, digest);
             let mut response = StatusCode::CREATED.into_response();
             let headers = response.headers_mut();
             headers.insert(header::LOCATION, HeaderValue::from_str(&location).unwrap());
-            headers.insert("Docker-Content-Digest", HeaderValue::from_str(&digest).unwrap());
+            headers.insert(
+                "Docker-Content-Digest",
+                HeaderValue::from_str(&digest).unwrap(),
+            );
             Ok(response)
         }
         _ => Err(ApiError::MethodNotAllowed),
@@ -243,20 +276,26 @@ async fn handle_post_request(
     Path(path): Path<String>,
     Query(query): Query<MountQuery>,
 ) -> Result<Response, ApiError> {
-    let req = parse_registry_path(&path)
-        .ok_or_else(|| ApiError::NotFound(path.clone()))?;
+    let req = parse_registry_path(&path).ok_or_else(|| ApiError::NotFound(path.clone()))?;
 
     match req {
         RegistryRequest::StartUpload { name } => {
             // Check if this is a mount request
             if let (Some(mount_digest), Some(from)) = (query.mount, query.from) {
                 debug!("Mount request: {} from {}", mount_digest, from);
-                if state.registry.mount_blob(&name, &mount_digest, &from).await? {
+                if state
+                    .registry
+                    .mount_blob(&name, &mount_digest, &from)
+                    .await?
+                {
                     let location = format!("/v2/{}/blobs/{}", name, mount_digest);
                     let mut response = StatusCode::CREATED.into_response();
                     let headers = response.headers_mut();
                     headers.insert(header::LOCATION, HeaderValue::from_str(&location).unwrap());
-                    headers.insert("Docker-Content-Digest", HeaderValue::from_str(&mount_digest).unwrap());
+                    headers.insert(
+                        "Docker-Content-Digest",
+                        HeaderValue::from_str(&mount_digest).unwrap(),
+                    );
                     return Ok(response);
                 }
             }
@@ -267,7 +306,10 @@ async fn handle_post_request(
             let mut response = StatusCode::ACCEPTED.into_response();
             let headers = response.headers_mut();
             headers.insert(header::LOCATION, HeaderValue::from_str(&location).unwrap());
-            headers.insert("Docker-Upload-UUID", HeaderValue::from_str(&session_id).unwrap());
+            headers.insert(
+                "Docker-Upload-UUID",
+                HeaderValue::from_str(&session_id).unwrap(),
+            );
             headers.insert(header::RANGE, HeaderValue::from_static("0-0"));
             Ok(response)
         }
@@ -281,8 +323,7 @@ async fn handle_patch_request(
     Path(path): Path<String>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let req = parse_registry_path(&path)
-        .ok_or_else(|| ApiError::NotFound(path.clone()))?;
+    let req = parse_registry_path(&path).ok_or_else(|| ApiError::NotFound(path.clone()))?;
 
     match req {
         RegistryRequest::Upload { name, session_id } => {
@@ -293,7 +334,10 @@ async fn handle_patch_request(
             let mut response = StatusCode::ACCEPTED.into_response();
             let headers = response.headers_mut();
             headers.insert(header::LOCATION, HeaderValue::from_str(&location).unwrap());
-            headers.insert("Docker-Upload-UUID", HeaderValue::from_str(&session_id).unwrap());
+            headers.insert(
+                "Docker-Upload-UUID",
+                HeaderValue::from_str(&session_id).unwrap(),
+            );
             headers.insert(header::RANGE, HeaderValue::from_str(&range).unwrap());
             Ok(response)
         }

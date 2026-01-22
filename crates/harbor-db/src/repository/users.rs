@@ -17,7 +17,10 @@ impl Database {
         // Check if user already exists
         let existing = self.get_user_by_username(&user.username).await?;
         if existing.is_some() {
-            return Err(DbError::Duplicate(format!("User '{}' already exists", user.username)));
+            return Err(DbError::Duplicate(format!(
+                "User '{}' already exists",
+                user.username
+            )));
         }
 
         let result = sqlx::query(
@@ -60,7 +63,9 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        result.map(|row| User::try_from(&row).map_err(DbError::from)).transpose()
+        result
+            .map(|row| User::try_from(&row).map_err(DbError::from))
+            .transpose()
     }
 
     /// Get a user by ID
@@ -76,7 +81,9 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        result.map(|row| User::try_from(&row).map_err(DbError::from)).transpose()
+        result
+            .map(|row| User::try_from(&row).map_err(DbError::from))
+            .transpose()
     }
 
     /// List all users
@@ -115,7 +122,11 @@ impl Database {
     }
 
     /// Update user password
-    pub async fn update_user_password(&self, id: i64, password_hash: &str) -> Result<bool, DbError> {
+    pub async fn update_user_password(
+        &self,
+        id: i64,
+        password_hash: &str,
+    ) -> Result<bool, DbError> {
         let now = Utc::now();
         let result = sqlx::query(
             r#"

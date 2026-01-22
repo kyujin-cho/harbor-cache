@@ -10,7 +10,10 @@ impl Database {
     // ==================== Upload Session Operations ====================
 
     /// Create a new upload session
-    pub async fn create_upload_session(&self, session: NewUploadSession) -> Result<UploadSession, DbError> {
+    pub async fn create_upload_session(
+        &self,
+        session: NewUploadSession,
+    ) -> Result<UploadSession, DbError> {
         let now = Utc::now();
         sqlx::query(
             r#"
@@ -49,11 +52,17 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
 
-        result.map(|row| UploadSession::try_from(&row).map_err(DbError::from)).transpose()
+        result
+            .map(|row| UploadSession::try_from(&row).map_err(DbError::from))
+            .transpose()
     }
 
     /// Update upload session bytes received
-    pub async fn update_upload_session(&self, id: &str, bytes_received: i64) -> Result<bool, DbError> {
+    pub async fn update_upload_session(
+        &self,
+        id: &str,
+        bytes_received: i64,
+    ) -> Result<bool, DbError> {
         let now = Utc::now();
         let result = sqlx::query(
             r#"

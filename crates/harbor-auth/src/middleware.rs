@@ -61,7 +61,11 @@ pub async fn auth_middleware(
         let claims = jwt_manager.validate_token(token)?;
         let user = AuthUser::from_claims(&claims);
 
-        debug!("Authenticated user: {} ({})", user.username, user.role.as_str());
+        debug!(
+            "Authenticated user: {} ({})",
+            user.username,
+            user.role.as_str()
+        );
 
         // Add user to request extensions
         request.extensions_mut().insert(user);
@@ -71,10 +75,7 @@ pub async fn auth_middleware(
 }
 
 /// Middleware to require admin role
-pub async fn require_admin(
-    request: Request,
-    next: Next,
-) -> Result<Response, AuthError> {
+pub async fn require_admin(request: Request, next: Next) -> Result<Response, AuthError> {
     let user = request
         .extensions()
         .get::<AuthUser>()
@@ -88,10 +89,7 @@ pub async fn require_admin(
 }
 
 /// Middleware to require write permissions
-pub async fn require_write(
-    request: Request,
-    next: Next,
-) -> Result<Response, AuthError> {
+pub async fn require_write(request: Request, next: Next) -> Result<Response, AuthError> {
     let user = request
         .extensions()
         .get::<AuthUser>()
