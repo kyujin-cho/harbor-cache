@@ -16,6 +16,21 @@ Harbor Cache acts as an intermediary between Docker clients and an upstream Harb
 - **TLS/HTTPS Support**: Native TLS support with PEM certificates
 - **Prometheus Metrics**: Built-in metrics endpoint for monitoring
 
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [User Guide](docs/user-guide.md) | End-user tutorial for Docker configuration and common workflows |
+| [Web UI Guide](docs/web-ui-guide.md) | Guide to the web-based management interface |
+| [API Reference](docs/api-reference.md) | Complete REST API documentation |
+| [Configuration](docs/configuration.md) | All configuration options explained |
+| [Architecture](docs/architecture.md) | System design and crate structure |
+| [Deployment](docs/deployment.md) | Deployment scenarios (Docker, Kubernetes, systemd) |
+| [Production Guide](docs/production-guide.md) | Performance tuning, HA, backup, and monitoring |
+| [Troubleshooting](docs/troubleshooting.md) | Common issues and solutions |
+| [Security](SECURITY.md) | Security model and hardening guidelines |
+| [Contributing](CONTRIBUTING.md) | Development setup and contribution guidelines |
+
 ## Quick Start
 
 ### Using Docker
@@ -232,4 +247,8 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-Contributions are welcome! Please read our contributing guidelines before submitting PRs.
+Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) before submitting PRs.
+
+## Security
+
+For security concerns, please see our [Security Policy](SECURITY.md). Do not open public issues for security vulnerabilities.
