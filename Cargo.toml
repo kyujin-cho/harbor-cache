@@ -45,7 +45,13 @@ jsonwebtoken = "9.3"
 argon2 = "0.5"
 
 # TLS
-rustls = "0.23"
+rustls = { version = "0.23", features = ["aws_lc_rs"] }
+rustls-pemfile = "2.2"
+tokio-rustls = { version = "0.26", features = ["aws-lc-rs"] }
+
+# HTTP server
+hyper = { version = "1.5", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
 
 # Configuration
 config = "0.14"

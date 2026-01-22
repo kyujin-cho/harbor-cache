@@ -1,9 +1,15 @@
 //! Harbor Cache - Lightweight caching proxy for Harbor container registries
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
+use std::fs::File;
+use std::io::BufReader;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use tokio_rustls::rustls::ServerConfig as RustlsServerConfig;
+use tokio_rustls::TlsAcceptor;
+use tower::Service;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -142,14 +148,65 @@ async fn main() -> Result<()> {
     let port = args.port.unwrap_or(config.server.port);
     let addr: SocketAddr = format!("{}:{}", bind_addr, port).parse()?;
 
-    info!("Listening on {}", addr);
     info!("Upstream: {}", config.upstream.url);
 
-    // Start server
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // Start server with or without TLS
+    if config.tls.enabled {
+        let tls_config = load_tls_config(&config.tls)?;
+        let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
+
+        info!("Listening on https://{} (TLS enabled)", addr);
+
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+
+        // Run TLS server
+        loop {
+            tokio::select! {
+                result = listener.accept() => {
+                    let (stream, peer_addr) = result?;
+                    let acceptor = tls_acceptor.clone();
+                    let app = app.clone();
+
+                    tokio::spawn(async move {
+                        match acceptor.accept(stream).await {
+                            Ok(tls_stream) => {
+                                let io = hyper_util::rt::TokioIo::new(tls_stream);
+                                let service = hyper::service::service_fn(move |req| {
+                                    let mut app = app.clone();
+                                    async move {
+                                        app.call(req).await
+                                    }
+                                });
+
+                                if let Err(e) = hyper_util::server::conn::auto::Builder::new(
+                                    hyper_util::rt::TokioExecutor::new()
+                                )
+                                .serve_connection(io, service)
+                                .await
+                                {
+                                    tracing::debug!("Error serving connection from {}: {}", peer_addr, e);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!("TLS handshake failed from {}: {}", peer_addr, e);
+                            }
+                        }
+                    });
+                }
+                _ = shutdown_signal() => {
+                    info!("Shutdown signal received");
+                    break;
+                }
+            }
+        }
+    } else {
+        info!("Listening on http://{}", addr);
+
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await?;
+    }
 
     info!("Server stopped");
     Ok(())
@@ -214,5 +271,64 @@ async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await
         .expect("Failed to install CTRL+C handler");
-    info!("Shutdown signal received");
+}
+
+/// Load TLS configuration from certificate and key files
+fn load_tls_config(tls_config: &config::TlsConfig) -> Result<RustlsServerConfig> {
+    use tokio_rustls::rustls::crypto::aws_lc_rs;
+
+    // Install the crypto provider
+    let _ = aws_lc_rs::default_provider().install_default();
+
+    let cert_path = tls_config
+        .cert_path
+        .as_ref()
+        .context("TLS certificate path not configured")?;
+    let key_path = tls_config
+        .key_path
+        .as_ref()
+        .context("TLS key path not configured")?;
+
+    // Load certificates
+    let cert_file = File::open(cert_path)
+        .with_context(|| format!("Failed to open certificate file: {}", cert_path))?;
+    let mut cert_reader = BufReader::new(cert_file);
+    let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("Failed to parse certificate file: {}", cert_path))?;
+
+    if certs.is_empty() {
+        anyhow::bail!("No certificates found in {}", cert_path);
+    }
+
+    // Load private key
+    let key_file = File::open(key_path)
+        .with_context(|| format!("Failed to open key file: {}", key_path))?;
+    let mut key_reader = BufReader::new(key_file);
+    let key = load_private_key(&mut key_reader)
+        .with_context(|| format!("Failed to parse key file: {}", key_path))?;
+
+    // Build TLS config
+    let config = RustlsServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .context("Failed to build TLS configuration")?;
+
+    info!("TLS configuration loaded from {} and {}", cert_path, key_path);
+    Ok(config)
+}
+
+/// Load private key from PEM file (supports RSA, PKCS8, and EC keys)
+fn load_private_key(reader: &mut BufReader<File>) -> Result<PrivateKeyDer<'static>> {
+    use rustls_pemfile::Item;
+
+    loop {
+        match rustls_pemfile::read_one(reader)? {
+            Some(Item::Pkcs1Key(key)) => return Ok(PrivateKeyDer::Pkcs1(key)),
+            Some(Item::Pkcs8Key(key)) => return Ok(PrivateKeyDer::Pkcs8(key)),
+            Some(Item::Sec1Key(key)) => return Ok(PrivateKeyDer::Sec1(key)),
+            Some(_) => continue, // Skip other items
+            None => anyhow::bail!("No private key found in key file"),
+        }
+    }
 }

@@ -391,11 +391,96 @@ Restart Docker:
 systemctl restart docker
 ```
 
-### Option 3: With TLS
+### Option 3: With TLS (Native)
 
-1. Generate TLS certificates
-2. Configure Harbor Cache with TLS
-3. Add CA certificate to Docker trust store
+Harbor Cache supports native TLS without a reverse proxy.
+
+**1. Generate TLS certificates:**
+
+```bash
+# Create certificate directory
+mkdir -p /etc/harbor-cache/tls
+
+# Generate self-signed certificate (development)
+openssl req -x509 -newkey rsa:4096 \
+  -keyout /etc/harbor-cache/tls/server.key \
+  -out /etc/harbor-cache/tls/server.crt \
+  -days 365 -nodes \
+  -subj "/CN=harbor-cache.example.com" \
+  -addext "subjectAltName=DNS:harbor-cache.example.com,DNS:localhost,IP:127.0.0.1"
+
+# Set permissions
+chmod 600 /etc/harbor-cache/tls/server.key
+chmod 644 /etc/harbor-cache/tls/server.crt
+```
+
+**2. Configure Harbor Cache with TLS:**
+
+```toml
+[server]
+bind_address = "0.0.0.0"
+port = 5001
+
+[tls]
+enabled = true
+cert_path = "/etc/harbor-cache/tls/server.crt"
+key_path = "/etc/harbor-cache/tls/server.key"
+```
+
+**3. Add CA certificate to Docker trust store:**
+
+For self-signed certificates:
+```bash
+# Create directory for Docker certificates
+mkdir -p /etc/docker/certs.d/harbor-cache.example.com:5001
+
+# Copy the certificate
+cp /etc/harbor-cache/tls/server.crt \
+   /etc/docker/certs.d/harbor-cache.example.com:5001/ca.crt
+
+# Restart Docker
+systemctl restart docker
+```
+
+**4. Test the connection:**
+
+```bash
+# Test with curl
+curl -v --cacert /etc/harbor-cache/tls/server.crt \
+  https://harbor-cache.example.com:5001/v2/
+
+# Pull image through HTTPS cache
+docker pull harbor-cache.example.com:5001/library/nginx:latest
+```
+
+---
+
+## TLS with Let's Encrypt
+
+For production environments, use Let's Encrypt certificates:
+
+```bash
+# Install certbot
+apt install certbot
+
+# Obtain certificate (standalone mode - stop Harbor Cache first)
+certbot certonly --standalone -d harbor-cache.example.com
+
+# Configure Harbor Cache
+cat >> /etc/harbor-cache/config.toml << 'EOF'
+[tls]
+enabled = true
+cert_path = "/etc/letsencrypt/live/harbor-cache.example.com/fullchain.pem"
+key_path = "/etc/letsencrypt/live/harbor-cache.example.com/privkey.pem"
+EOF
+
+# Set up auto-renewal with reload
+cat > /etc/letsencrypt/renewal-hooks/post/harbor-cache.sh << 'EOF'
+#!/bin/bash
+systemctl reload harbor-cache
+EOF
+chmod +x /etc/letsencrypt/renewal-hooks/post/harbor-cache.sh
+```
 
 ---
 

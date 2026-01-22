@@ -56,3 +56,11 @@ enabled = true
 level = "info"
 # Log format: "pretty" or "json"
 format = "pretty"
+
+[tls]
+# Enable TLS/HTTPS
+enabled = false
+# Path to TLS certificate file (PEM format)
+# cert_path = "/path/to/cert.pem"
+# Path to TLS private key file (PEM format)
+# key_path = "/path/to/key.pem"

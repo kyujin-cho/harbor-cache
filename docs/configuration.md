@@ -251,6 +251,45 @@ format = "json"
 
 ---
 
+### [tls]
+
+TLS/HTTPS configuration for secure connections.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | boolean | `false` | Enable TLS/HTTPS |
+| `cert_path` | string | (required if enabled) | Path to TLS certificate file (PEM format) |
+| `key_path` | string | (required if enabled) | Path to TLS private key file (PEM format) |
+
+**Example:**
+```toml
+[tls]
+enabled = true
+cert_path = "/etc/harbor-cache/tls/server.crt"
+key_path = "/etc/harbor-cache/tls/server.key"
+```
+
+**Supported Key Formats:**
+- PKCS#1 RSA keys (BEGIN RSA PRIVATE KEY)
+- PKCS#8 keys (BEGIN PRIVATE KEY)
+- SEC1 EC keys (BEGIN EC PRIVATE KEY)
+
+**Generate Self-Signed Certificate:**
+```bash
+# Generate private key and certificate
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
+  -subj "/CN=harbor-cache.example.com"
+
+# Or with SAN for multiple domains
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
+  -subj "/CN=harbor-cache.example.com" \
+  -addext "subjectAltName=DNS:harbor-cache.example.com,DNS:localhost,IP:127.0.0.1"
+```
+
+**Security Note:** In production, use certificates from a trusted Certificate Authority (CA) or your organization's internal CA.
+
+---
+
 ## Complete Example Configuration
 
 ```toml
@@ -288,6 +327,11 @@ enabled = true
 [logging]
 level = "info"
 format = "json"
+
+[tls]
+enabled = false
+# cert_path = "/etc/harbor-cache/tls/server.crt"
+# key_path = "/etc/harbor-cache/tls/server.key"
 ```
 
 ---

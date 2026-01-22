@@ -16,6 +16,8 @@ pub struct Config {
     pub auth: AuthConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 /// Server configuration
@@ -111,6 +113,28 @@ impl Default for LoggingConfig {
         Self {
             level: default_log_level(),
             format: "pretty".to_string(),
+        }
+    }
+}
+
+/// TLS configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsConfig {
+    /// Enable TLS/HTTPS
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to TLS certificate file (PEM format)
+    pub cert_path: Option<String>,
+    /// Path to TLS private key file (PEM format)
+    pub key_path: Option<String>,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            cert_path: None,
+            key_path: None,
         }
     }
 }
@@ -220,6 +244,7 @@ impl Default for Config {
                 enabled: default_auth_enabled(),
             },
             logging: LoggingConfig::default(),
+            tls: TlsConfig::default(),
         }
     }
 }

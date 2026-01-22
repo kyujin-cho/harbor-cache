@@ -13,6 +13,7 @@ Harbor Cache acts as an intermediary between Docker clients and an upstream Harb
 - **Web UI**: Dashboard for monitoring and management
 - **REST API**: Full management API for automation
 - **Authentication**: JWT-based auth with role-based access control
+- **TLS/HTTPS Support**: Native TLS support with PEM certificates
 - **Prometheus Metrics**: Built-in metrics endpoint for monitoring
 
 ## Quick Start
@@ -86,6 +87,29 @@ allow_http = true
 [auth]
 jwt_secret = "change-me-in-production"
 enabled = true
+
+[tls]
+enabled = false
+# cert_path = "/path/to/cert.pem"
+# key_path = "/path/to/key.pem"
+```
+
+### TLS/HTTPS Configuration
+
+To enable HTTPS:
+
+```toml
+[tls]
+enabled = true
+cert_path = "/etc/harbor-cache/tls/server.crt"
+key_path = "/etc/harbor-cache/tls/server.key"
+```
+
+Generate a self-signed certificate for development:
+
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes \
+  -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
 ```
 
 ## Usage
