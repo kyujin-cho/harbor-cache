@@ -303,41 +303,64 @@ impl CacheManager {
         let digest_owned = digest.to_string();
         let content_type_owned = content_type.to_string();
 
-        // Spawn task to read from source, write to storage, and send to channel
-        let cache_handle = tokio::spawn(async move {
-            // Collect chunks for writing to storage while sending to client
-            let mut chunks = Vec::new();
+        // Create a second bounded channel for feeding storage writes (true pipeline)
+        let (storage_tx, storage_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, harbor_storage::StorageError>>(8);
 
-            while let Some(chunk_result) = source_stream.next().await {
-                match chunk_result {
-                    Ok(chunk) => {
-                        // Send to client (may block if channel is full - backpressure!)
-                        if tx.send(Ok(chunk.clone())).await.is_err() {
-                            // Client disconnected, but continue caching
-                            debug!("Client disconnected during tee, continuing cache");
+        // Spawn task to read from source and fan out to both client and storage channels
+        let fan_out_handle: tokio::task::JoinHandle<Result<(), CoreError>> =
+            tokio::spawn(async move {
+                while let Some(chunk_result) = source_stream.next().await {
+                    match chunk_result {
+                        Ok(chunk) => {
+                            // Send to client (may block if channel is full - backpressure!)
+                            if tx.send(Ok(chunk.clone())).await.is_err() {
+                                debug!("Client disconnected during tee, continuing cache");
+                            }
+                            // Send to storage pipeline
+                            if storage_tx.send(Ok(chunk)).await.is_err() {
+                                warn!("Storage channel closed during tee");
+                                break;
+                            }
                         }
-                        chunks.push(chunk);
-                    }
-                    Err(e) => {
-                        // Forward error to client
-                        let _ = tx.send(Err(e)).await;
-                        return Err(CoreError::Storage(harbor_storage::StorageError::Io(
-                            std::io::Error::new(std::io::ErrorKind::Other, "Stream error")
-                        )));
+                        Err(e) => {
+                            let _ = tx
+                                .send(Err(harbor_storage::StorageError::Io(
+                                    std::io::Error::new(
+                                        std::io::ErrorKind::Other,
+                                        e.to_string(),
+                                    ),
+                                )))
+                                .await;
+                            let _ = storage_tx.send(Err(e)).await;
+                            return Err(CoreError::Storage(harbor_storage::StorageError::Io(
+                                std::io::Error::new(std::io::ErrorKind::Other, "Stream error"),
+                            )));
+                        }
                     }
                 }
-            }
+                // Drop senders to signal completion
+                Ok(())
+            });
 
-            // Create stream from collected chunks for storage
-            let chunk_stream: ByteStream = Box::pin(futures::stream::iter(
-                chunks.into_iter().map(|c| Ok(c))
-            ));
+        // Spawn task to consume storage channel and write to storage
+        let cache_handle = tokio::spawn(async move {
+            // Wait for fan-out to finish (or at least start producing)
+            let storage_stream: ByteStream =
+                Box::pin(tokio_stream::wrappers::ReceiverStream::new(storage_rx));
 
-            // Write to storage
-            let storage_path = storage.write_stream(&digest_owned, chunk_stream, expected_size).await?;
+            // Write to storage from the channel stream (no full-blob buffering)
+            let storage_path = storage
+                .write_stream(&digest_owned, storage_stream, expected_size)
+                .await?;
 
             // Get actual size from storage
             let actual_size = storage.size(&digest_owned).await? as i64;
+
+            // Wait for fan-out task to finish and propagate errors
+            if let Err(e) = fan_out_handle.await {
+                warn!("Fan-out task panicked during tee: {:?}", e);
+            }
 
             // Create database entry
             let entry = db

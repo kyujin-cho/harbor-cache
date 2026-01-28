@@ -45,7 +45,9 @@ pub struct HarborClient {
 impl HarborClient {
     /// Create a new Harbor client
     pub fn new(config: HarborClientConfig) -> Result<Self, ProxyError> {
-        let mut builder = Client::builder();
+        let mut builder = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(60));
 
         if config.skip_tls_verify {
             builder = builder.danger_accept_invalid_certs(true);
@@ -426,10 +428,17 @@ impl HarborClient {
         }
 
         if !status.is_success() {
-            let error_msg = response.text().await.unwrap_or_default();
+            let error_body = response.text().await.unwrap_or_default();
+            // Log full upstream error server-side for debugging
+            tracing::error!(
+                "Upstream error for blob stream (status {}): {}",
+                status.as_u16(),
+                error_body
+            );
+            // Return generic message to client to avoid leaking upstream internals
             return Err(ProxyError::UpstreamError {
                 status: status.as_u16(),
-                message: error_msg,
+                message: format!("Upstream returned HTTP {}", status.as_u16()),
             });
         }
 

@@ -186,10 +186,15 @@ async fn handle_get_or_head_request(
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("application/octet-stream"),
                 );
-                headers.insert(
-                    header::CONTENT_LENGTH,
-                    HeaderValue::from(size),
-                );
+                // Only set Content-Length when we have a known size.
+                // When upstream omits Content-Length (size=0), omitting it here
+                // lets axum use chunked transfer encoding automatically.
+                if size > 0 {
+                    headers.insert(
+                        header::CONTENT_LENGTH,
+                        HeaderValue::from(size),
+                    );
+                }
                 headers.insert(
                     "Docker-Content-Digest",
                     HeaderValue::from_str(&digest).unwrap(),

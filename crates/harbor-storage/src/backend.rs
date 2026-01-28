@@ -77,6 +77,56 @@ pub fn parse_digest(digest: &str) -> Result<(&str, &str), StorageError> {
     Ok((parts[0], parts[1]))
 }
 
+/// Validate a digest string for safety and correctness.
+///
+/// Ensures:
+/// - The algorithm is a known, supported value (sha256, sha512)
+/// - The hash portion contains only lowercase hex characters
+/// - The hash has a minimum length appropriate for the algorithm
+///
+/// This MUST be called at service boundaries to prevent path traversal
+/// attacks via malicious digest values (e.g., `sha256:../../etc/passwd`).
+pub fn validate_digest(digest: &str) -> Result<(), StorageError> {
+    let (algorithm, hash) = parse_digest(digest)?;
+
+    // Only allow known algorithms
+    match algorithm {
+        "sha256" | "sha512" => {}
+        _ => {
+            return Err(StorageError::InvalidDigest(format!(
+                "Unsupported digest algorithm: {}",
+                algorithm
+            )));
+        }
+    }
+
+    // Minimum hash length (sha256 = 64 hex chars, sha512 = 128 hex chars)
+    let min_len = match algorithm {
+        "sha256" => 64,
+        "sha512" => 128,
+        _ => 64,
+    };
+
+    if hash.len() < min_len {
+        return Err(StorageError::InvalidDigest(format!(
+            "Hash too short for {}: expected {} chars, got {}",
+            algorithm,
+            min_len,
+            hash.len()
+        )));
+    }
+
+    // Hash must be lowercase hexadecimal only (prevents path traversal)
+    if !hash.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+        return Err(StorageError::InvalidDigest(format!(
+            "Hash contains invalid characters (must be lowercase hex): {}",
+            digest
+        )));
+    }
+
+    Ok(())
+}
+
 /// Compute SHA256 digest of data
 pub fn compute_sha256(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};

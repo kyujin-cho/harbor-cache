@@ -12,7 +12,7 @@ use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, PutPayload};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::backend::{ByteStream, StorageBackend, compute_sha256, parse_digest};
 use crate::error::StorageError;
@@ -286,8 +286,13 @@ impl StorageBackend for S3Storage {
         // Verify digest
         let computed = format!("sha256:{}", hex::encode(hasher.finalize()));
         if computed != digest {
-            // Clean up the uploaded object
-            let _ = self.store.delete(&path).await;
+            // Clean up the uploaded object, log failure if cleanup fails
+            if let Err(e) = self.store.delete(&path).await {
+                warn!(
+                    "Failed to clean up S3 object after digest mismatch (path: {:?}): {}",
+                    path, e
+                );
+            }
             return Err(StorageError::DigestMismatch {
                 expected: digest.to_string(),
                 actual: computed,
@@ -397,8 +402,13 @@ impl StorageBackend for S3Storage {
         // Verify digest
         let computed = format!("sha256:{}", hex::encode(hasher.finalize()));
         if computed != digest {
-            // Clean up
-            let _ = self.store.delete(&upload_path).await;
+            // Clean up, log failure if cleanup fails
+            if let Err(e) = self.store.delete(&upload_path).await {
+                warn!(
+                    "Failed to clean up S3 upload after digest mismatch (path: {:?}): {}",
+                    upload_path, e
+                );
+            }
             return Err(StorageError::DigestMismatch {
                 expected: digest.to_string(),
                 actual: computed,
@@ -412,7 +422,12 @@ impl StorageBackend for S3Storage {
             .map_err(|e| StorageError::S3(format!("Failed to copy to final location: {}", e)))?;
 
         // Delete upload file
-        let _ = self.store.delete(&upload_path).await;
+        if let Err(e) = self.store.delete(&upload_path).await {
+            warn!(
+                "Failed to delete S3 upload temp file after completion (path: {:?}): {}",
+                upload_path, e
+            );
+        }
 
         Ok(blob_path.to_string())
     }

@@ -5,7 +5,7 @@ use harbor_db::{Database, EntryType, NewUploadSession, UploadSession};
 use harbor_proxy::HarborClient;
 use harbor_storage::StorageBackend;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::cache::CacheManager;
@@ -180,6 +180,8 @@ impl RegistryService {
         repository: &str,
         digest: &str,
     ) -> Result<(harbor_storage::backend::ByteStream, u64), CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        harbor_storage::backend::validate_digest(digest)?;
         debug!("Getting blob stream: {}", digest);
 
         // Check cache first
@@ -212,7 +214,7 @@ impl RegistryService {
         }));
 
         // Tee the stream: one copy to cache, one copy to return
-        let (client_stream, _cache_handle) = self
+        let (client_stream, cache_handle) = self
             .cache
             .tee_and_cache_stream(
                 EntryType::Blob,
@@ -225,8 +227,28 @@ impl RegistryService {
             )
             .await?;
 
-        // Note: We don't wait for cache_handle to complete - caching happens asynchronously
-        // This allows the client to start receiving data immediately
+        // Spawn a wrapper task that awaits the cache handle and logs errors.
+        // We don't block the client response on caching completion.
+        let digest_for_log = digest.to_string();
+        tokio::spawn(async move {
+            match cache_handle.await {
+                Ok(Ok(_entry)) => {
+                    debug!("Background cache write succeeded for {}", digest_for_log);
+                }
+                Ok(Err(e)) => {
+                    warn!(
+                        "Background cache write failed for {}: {}",
+                        digest_for_log, e
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Background cache task panicked for {}: {:?}",
+                        digest_for_log, e
+                    );
+                }
+            }
+        });
 
         Ok((client_stream, size))
     }
@@ -279,6 +301,8 @@ impl RegistryService {
         repository: &str,
         digest: &str,
     ) -> Result<Option<i64>, CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        harbor_storage::backend::validate_digest(digest)?;
         // Check cache first
         if let Some(entry) = self.cache.get_metadata(digest).await? {
             return Ok(Some(entry.size));
@@ -343,6 +367,8 @@ impl RegistryService {
         session_id: &str,
         digest: &str,
     ) -> Result<(), CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        harbor_storage::backend::validate_digest(digest)?;
         debug!("Completing upload: {} -> {}", session_id, digest);
 
         // Get session info
@@ -412,6 +438,8 @@ impl RegistryService {
         digest: &str,
         from: &str,
     ) -> Result<bool, CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        harbor_storage::backend::validate_digest(digest)?;
         debug!(
             "Attempting to mount blob {} from {} to {}",
             digest, from, repository
