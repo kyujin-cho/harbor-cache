@@ -27,7 +27,7 @@ tower = { version = "0.5", features = ["util", "timeout"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 
 # HTTP client
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "charset", "http2", "macos-system-configuration"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

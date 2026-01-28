@@ -4,14 +4,13 @@
 # Run:   docker run -p 5001:5001 -v ./config:/app/config -v ./data:/app/data harbor-cache
 
 # Build stage
-FROM rust:1.85-slim AS builder
+FROM rust:1-slim AS builder
 
 WORKDIR /build
 
-# Install build dependencies
+# Install build dependencies (cmake needed for aws-lc-sys)
 RUN apt-get update && apt-get install -y \
     pkg-config \
-    libssl-dev \
     cmake \
     && rm -rf /var/lib/apt/lists/*
 
@@ -30,7 +29,6 @@ WORKDIR /app
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binary from builder
