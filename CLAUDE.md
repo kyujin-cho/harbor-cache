@@ -142,6 +142,13 @@ docker compose down
 
 ## Docker
 
+The Dockerfile uses a multi-stage build:
+1. **Frontend stage** (`node:20-slim`): Builds the Vue.js frontend (`frontend/` directory)
+2. **Backend stage** (`rust:1-slim`): Compiles the Rust binary
+3. **Runtime stage** (`debian:bookworm-slim`): Copies the binary, config, and built frontend assets
+
+The Docker image includes `curl` for healthcheck support and bakes in the frontend assets at `/app/static`. Do **not** mount a host volume over `/app/static` as it would override the built-in web UI.
+
 ```bash
 # Build Docker image
 docker build -t harbor-cache .

@@ -99,7 +99,9 @@ journalctl -u harbor-cache -n 10 --no-pager 2>/dev/null || tail -10 /var/log/har
 
 3. **Permission denied:**
    ```bash
-   # Check data directory permissions
+   # Harbor Cache auto-creates the database and storage directories on startup.
+   # If you get permission errors, ensure the process user has write access
+   # to the parent paths configured for database.path and storage.local.path.
    ls -la /var/lib/harbor-cache/
 
    # Fix permissions
@@ -331,6 +333,8 @@ iftop -i eth0
 
 **Symptom:** Errors mentioning SQLite or database.
 
+**Note:** Harbor Cache automatically creates the database parent directory on startup. If you previously encountered "unable to open database file" errors due to a missing directory, this is now handled automatically. Permission errors can still occur if the process does not have write access to the parent path.
+
 **Common Errors:**
 
 1. **"database is locked"**
@@ -545,7 +549,7 @@ Service fails to start
 | "database is locked" | Concurrent access | Restart service |
 | "connection refused" | Upstream unreachable | Check network/firewall |
 | "certificate verify failed" | TLS trust issue | Add CA cert or skip verify |
-| "no such file or directory" | Missing config/data | Check paths in config |
+| "no such file or directory" | Missing config file | Check paths in config (database and storage directories are auto-created) |
 | "permission denied" | File access issue | Fix permissions |
 | "address already in use" | Port conflict | Change port or stop other service |
 

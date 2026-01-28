@@ -49,6 +49,7 @@ harbor-cache/
 The main entry point containing:
 - CLI argument parsing (clap)
 - Configuration loading
+- Automatic creation of database parent directory before initialization
 - Component initialization
 - Server startup and shutdown
 

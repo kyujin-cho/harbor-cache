@@ -45,10 +45,8 @@ jwt_secret = "change-me-in-production"
 enabled = true
 EOF
 
-# Create data directory
-mkdir -p /var/lib/harbor-cache
-
-# Run
+# Run (the database parent directory is auto-created on startup;
+# the storage directory for local backend is also auto-created)
 harbor-cache --config /etc/harbor-cache/config.toml
 ```
 
@@ -93,6 +91,8 @@ services:
 volumes:
   harbor-cache-data:
 ```
+
+**Important:** The Docker image includes pre-built frontend assets in `/app/static` (built during the multi-stage Docker build). Do **not** mount a host directory over `/app/static`, as this would replace the baked-in web UI with whatever is on the host (potentially an empty directory).
 
 ---
 

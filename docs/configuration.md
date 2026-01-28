@@ -193,6 +193,8 @@ path = "/var/lib/harbor-cache/harbor-cache.db"
 
 **Note:** The database stores metadata only. Actual blob data is in the storage backend.
 
+**Auto-creation:** Harbor Cache automatically creates the parent directory of the database path on startup (using `create_dir_all`). You do not need to manually create the directory beforehand.
+
 ---
 
 ### [auth]
@@ -362,7 +364,7 @@ Harbor Cache validates configuration on startup. Common validation errors:
 | `Invalid eviction policy` | Use `lru`, `lfu`, or `fifo` |
 | `Invalid upstream URL` | Ensure URL is valid (include scheme) |
 | `Cannot create storage directory` | Check permissions |
-| `Cannot connect to database` | Check path and permissions |
+| `Cannot connect to database` | Check path permissions (parent directory is auto-created) |
 
 ---
 
