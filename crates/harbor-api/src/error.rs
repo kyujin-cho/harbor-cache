@@ -63,6 +63,12 @@ impl IntoResponse for ApiError {
                 harbor_core::CoreError::NotFound(msg) => {
                     (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone())
                 }
+                harbor_core::CoreError::BadRequest(msg) => {
+                    (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone())
+                }
+                harbor_core::CoreError::InvalidDigest(msg) => {
+                    (StatusCode::BAD_REQUEST, "DIGEST_INVALID", msg.clone())
+                }
                 _ => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "INTERNAL_ERROR",

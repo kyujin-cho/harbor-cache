@@ -343,9 +343,19 @@ impl StorageBackend for S3Storage {
         let path = self.upload_path(session_id);
         debug!("Appending {} bytes to S3 upload: {:?}", data.len(), path);
 
-        // S3 doesn't support append, so we need to read, append, and write back
-        // This is inefficient but works for compatibility
-        // For production, consider using S3 multipart uploads directly
+        // WARNING: S3 doesn't support append operations natively.
+        // This implementation reads the entire existing data, appends in memory, and re-uploads.
+        // This creates O(n^2) time complexity and O(n) memory usage for chunked uploads.
+        //
+        // For large blobs with many chunks, this can cause:
+        // - Slow upload performance
+        // - High memory usage during chunk appends
+        // - Increased S3 API costs (GET + PUT per chunk)
+        //
+        // RECOMMENDED: For production with large blobs, consider:
+        // 1. Using S3 multipart uploads directly (requires tracking upload_id and part_numbers)
+        // 2. Buffering chunks locally before uploading to S3
+        // 3. Using a different storage backend for chunked uploads
 
         let existing = match self.store.get(&path).await {
             Ok(result) => result

@@ -43,6 +43,12 @@ impl RegistryService {
         repository: &str,
         reference: &str,
     ) -> Result<(Bytes, String, String), CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        // when reference is a digest (starts with sha256: or sha512:)
+        if reference.starts_with("sha256:") || reference.starts_with("sha512:") {
+            harbor_storage::backend::validate_digest(reference)?;
+        }
+
         // First, check if reference is a digest
         let _cache_key = if reference.starts_with("sha256:") {
             reference.to_string()
@@ -108,6 +114,11 @@ impl RegistryService {
         repository: &str,
         reference: &str,
     ) -> Result<Option<(String, String, i64)>, CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        if reference.starts_with("sha256:") || reference.starts_with("sha512:") {
+            harbor_storage::backend::validate_digest(reference)?;
+        }
+
         // Check cache first if reference is a digest
         if reference.starts_with("sha256:")
             && let Some(entry) = self.cache.get_metadata(reference).await?
@@ -135,6 +146,12 @@ impl RegistryService {
         content_type: &str,
         data: Bytes,
     ) -> Result<String, CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        // when reference is a digest (starts with sha256: or sha512:)
+        if reference.starts_with("sha256:") || reference.starts_with("sha512:") {
+            harbor_storage::backend::validate_digest(reference)?;
+        }
+
         debug!("Pushing manifest: {}:{}", repository, reference);
 
         // Compute digest
@@ -256,6 +273,8 @@ impl RegistryService {
     /// Get a blob fully buffered (for cases that need in-memory data)
     #[allow(dead_code)]
     pub async fn get_blob_buffered(&self, repository: &str, digest: &str) -> Result<Bytes, CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        harbor_storage::backend::validate_digest(digest)?;
         debug!("Getting blob buffered: {}", digest);
 
         // Check cache first
@@ -322,6 +341,47 @@ impl RegistryService {
 
     // ==================== Upload Operations ====================
 
+    /// Validate session ID format to prevent path traversal attacks.
+    /// Session IDs must be valid UUIDs (lowercase hex with dashes).
+    fn validate_session_id(session_id: &str) -> Result<(), CoreError> {
+        // UUID format: 8-4-4-4-12 lowercase hex characters with dashes
+        // e.g., "550e8400-e29b-41d4-a716-446655440000"
+        if session_id.len() != 36 {
+            return Err(CoreError::BadRequest(format!(
+                "Invalid session ID format: {}",
+                session_id
+            )));
+        }
+
+        // Check UUID format with dashes at correct positions
+        let parts: Vec<&str> = session_id.split('-').collect();
+        if parts.len() != 5 {
+            return Err(CoreError::BadRequest(format!(
+                "Invalid session ID format: {}",
+                session_id
+            )));
+        }
+
+        let expected_lens = [8, 4, 4, 4, 12];
+        for (part, &expected_len) in parts.iter().zip(expected_lens.iter()) {
+            if part.len() != expected_len {
+                return Err(CoreError::BadRequest(format!(
+                    "Invalid session ID format: {}",
+                    session_id
+                )));
+            }
+            // Must be lowercase hex only
+            if !part.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+                return Err(CoreError::BadRequest(format!(
+                    "Invalid session ID format (must be lowercase hex): {}",
+                    session_id
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Start a blob upload session
     pub async fn start_upload(&self, repository: &str) -> Result<String, CoreError> {
         let session_id = Uuid::new_v4().to_string();
@@ -345,11 +405,15 @@ impl RegistryService {
         &self,
         session_id: &str,
     ) -> Result<Option<UploadSession>, CoreError> {
+        // Validate session ID format to prevent path traversal
+        Self::validate_session_id(session_id)?;
         Ok(self.db.get_upload_session(session_id).await?)
     }
 
     /// Append data to an upload session
     pub async fn append_upload(&self, session_id: &str, data: Bytes) -> Result<i64, CoreError> {
+        // Validate session ID format to prevent path traversal
+        Self::validate_session_id(session_id)?;
         debug!("Appending {} bytes to upload: {}", data.len(), session_id);
 
         let new_size = self.storage.append_chunk(session_id, data).await?;
@@ -367,6 +431,8 @@ impl RegistryService {
         session_id: &str,
         digest: &str,
     ) -> Result<(), CoreError> {
+        // Validate session ID format to prevent path traversal
+        Self::validate_session_id(session_id)?;
         // Validate digest format at service boundary to prevent path traversal
         harbor_storage::backend::validate_digest(digest)?;
         debug!("Completing upload: {} -> {}", session_id, digest);
@@ -423,6 +489,8 @@ impl RegistryService {
 
     /// Cancel an upload session
     pub async fn cancel_upload(&self, session_id: &str) -> Result<(), CoreError> {
+        // Validate session ID format to prevent path traversal
+        Self::validate_session_id(session_id)?;
         debug!("Canceling upload: {}", session_id);
 
         self.storage.cancel_chunked_upload(session_id).await?;
