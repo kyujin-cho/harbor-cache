@@ -174,9 +174,67 @@ impl RegistryService {
 
     // ==================== Blob Operations ====================
 
-    /// Get a blob (cache-aside pattern)
-    pub async fn get_blob(&self, repository: &str, digest: &str) -> Result<Bytes, CoreError> {
-        debug!("Getting blob: {}", digest);
+    /// Get a blob as a stream (cache-aside pattern with tee for simultaneous caching and serving)
+    pub async fn get_blob(
+        &self,
+        repository: &str,
+        digest: &str,
+    ) -> Result<(harbor_storage::backend::ByteStream, u64), CoreError> {
+        debug!("Getting blob stream: {}", digest);
+
+        // Check cache first
+        if let Some((stream, entry)) = self.cache.get_stream(digest).await? {
+            info!("Cache hit for blob: {}", digest);
+            return Ok((stream, entry.size as u64));
+        }
+
+        // Cache miss - fetch from upstream with streaming
+        info!("Cache miss for blob: {}, fetching from upstream", digest);
+
+        let (stream, size) = self
+            .upstream
+            .get_blob_stream(repository, digest)
+            .await
+            .map_err(|e| {
+                if matches!(e, harbor_proxy::ProxyError::NotFound(_)) {
+                    CoreError::NotFound(digest.to_string())
+                } else {
+                    CoreError::Proxy(e)
+                }
+            })?;
+
+        // Convert ProxyError stream to StorageError stream for caching
+        use futures::StreamExt;
+        let storage_stream: harbor_storage::backend::ByteStream = Box::pin(stream.map(|result| {
+            result.map_err(|e| harbor_storage::StorageError::Io(
+                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            ))
+        }));
+
+        // Tee the stream: one copy to cache, one copy to return
+        let (client_stream, _cache_handle) = self
+            .cache
+            .tee_and_cache_stream(
+                EntryType::Blob,
+                Some(repository.to_string()),
+                None,
+                digest,
+                "application/octet-stream",
+                storage_stream,
+                Some(size),
+            )
+            .await?;
+
+        // Note: We don't wait for cache_handle to complete - caching happens asynchronously
+        // This allows the client to start receiving data immediately
+
+        Ok((client_stream, size))
+    }
+
+    /// Get a blob fully buffered (for cases that need in-memory data)
+    #[allow(dead_code)]
+    pub async fn get_blob_buffered(&self, repository: &str, digest: &str) -> Result<Bytes, CoreError> {
+        debug!("Getting blob buffered: {}", digest);
 
         // Check cache first
         if let Some((data, _entry)) = self.cache.get(digest).await? {
@@ -187,6 +245,7 @@ impl RegistryService {
         // Cache miss - fetch from upstream
         info!("Cache miss for blob: {}, fetching from upstream", digest);
 
+        #[allow(deprecated)]
         let (data, _size) = self
             .upstream
             .get_blob(repository, digest)
@@ -214,7 +273,7 @@ impl RegistryService {
         Ok(data)
     }
 
-    /// Check if a blob exists (HEAD request)
+    /// Check if a blob exists (HEAD request - no download)
     pub async fn blob_exists(
         &self,
         repository: &str,
@@ -225,15 +284,15 @@ impl RegistryService {
             return Ok(Some(entry.size));
         }
 
-        // Check upstream
-        if self.upstream.blob_exists(repository, digest).await? {
-            // Fetch and cache it
-            match self.get_blob(repository, digest).await {
-                Ok(data) => Ok(Some(data.len() as i64)),
-                Err(_) => Ok(None),
+        // Check upstream with HEAD request only (no download)
+        match self.upstream.get_blob_size(repository, digest).await {
+            Ok((size, _content_type)) => {
+                // Optionally trigger background cache warm-up
+                // For now, just return the size without downloading
+                Ok(Some(size as i64))
             }
-        } else {
-            Ok(None)
+            Err(harbor_proxy::ProxyError::NotFound(_)) => Ok(None),
+            Err(e) => Err(CoreError::Proxy(e)),
         }
     }
 
@@ -277,7 +336,7 @@ impl RegistryService {
         Ok(new_size as i64)
     }
 
-    /// Complete an upload session
+    /// Complete an upload session (with streaming push to upstream)
     pub async fn complete_upload(
         &self,
         repository: &str,
@@ -302,12 +361,18 @@ impl RegistryService {
         // Get the size
         let size = self.storage.size(digest).await?;
 
-        // Read the data for pushing to upstream
-        let data = self.storage.read(digest).await?;
+        // Stream the data for pushing to upstream (avoid buffering in memory)
+        let storage_stream = self.storage.stream(digest).await?;
 
-        // Push to upstream
+        // Convert StorageError stream to ProxyError stream for upstream
+        use futures::StreamExt;
+        let proxy_stream: harbor_proxy::client::ByteStream = Box::pin(storage_stream.map(|result| {
+            result.map_err(|e| harbor_proxy::ProxyError::InvalidResponse(e.to_string()))
+        }));
+
+        // Push to upstream with streaming
         self.upstream
-            .push_blob(repository, digest, data.clone())
+            .push_blob_stream(repository, digest, proxy_stream, size)
             .await?;
 
         // Create cache entry
@@ -340,7 +405,7 @@ impl RegistryService {
         Ok(())
     }
 
-    /// Mount a blob from another repository (if it exists in cache)
+    /// Mount a blob from another repository (if it exists in cache) with streaming
     pub async fn mount_blob(
         &self,
         repository: &str,
@@ -360,17 +425,26 @@ impl RegistryService {
 
         // Check if it exists in upstream (from source)
         if self.upstream.blob_exists(from, digest).await? {
-            // Fetch from source and cache
-            let (data, _size) = self.upstream.get_blob(from, digest).await?;
+            // Fetch from source and cache with streaming
+            let (proxy_stream, size) = self.upstream.get_blob_stream(from, digest).await?;
+
+            // Convert ProxyError stream to StorageError stream for caching
+            use futures::StreamExt;
+            let storage_stream: harbor_storage::backend::ByteStream = Box::pin(proxy_stream.map(|result| {
+                result.map_err(|e| harbor_storage::StorageError::Io(
+                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+                ))
+            }));
 
             self.cache
-                .put(
+                .put_stream(
                     EntryType::Blob,
                     Some(repository.to_string()),
                     None,
                     digest,
                     "application/octet-stream",
-                    data,
+                    storage_stream,
+                    Some(size),
                 )
                 .await?;
 
