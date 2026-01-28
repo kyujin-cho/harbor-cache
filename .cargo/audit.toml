@@ -11,7 +11,5 @@ ignore = [
     "RUSTSEC-2023-0071",
 ]
 
-# Warn about unmaintained crates but don't fail
-[output]
-deny = []
-warn = ["unmaintained"]
+# Only treat actual vulnerabilities as errors, not informational warnings
+informational_warnings = []
