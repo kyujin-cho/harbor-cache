@@ -243,30 +243,56 @@ impl StorageBackend for S3Storage {
         let path = self.blob_path(digest)?;
         debug!("Writing blob stream to S3: {:?}", path);
 
-        // Collect stream into bytes while computing digest
-        let mut data = Vec::new();
+        // Use S3 multipart upload to avoid buffering entire blob in memory
+        let mut upload = self
+            .store
+            .put_multipart(&path)
+            .await
+            .map_err(|e| StorageError::S3(format!("Failed to start multipart upload: {}", e)))?;
+
         let mut hasher = Sha256::new();
+        let mut buffer = Vec::with_capacity(5 * 1024 * 1024); // 5MB minimum part size for S3
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
             hasher.update(&chunk);
-            data.extend_from_slice(&chunk);
+            buffer.extend_from_slice(&chunk);
+
+            // Upload part when buffer reaches minimum size (5MB)
+            // Last part can be smaller
+            if buffer.len() >= 5 * 1024 * 1024 {
+                upload
+                    .put_part(PutPayload::from(Bytes::from(std::mem::take(&mut buffer))))
+                    .await
+                    .map_err(|e| StorageError::S3(format!("Failed to upload part: {}", e)))?;
+                buffer = Vec::with_capacity(5 * 1024 * 1024);
+            }
         }
+
+        // Upload remaining data as final part
+        if !buffer.is_empty() {
+            upload
+                .put_part(PutPayload::from(Bytes::from(buffer)))
+                .await
+                .map_err(|e| StorageError::S3(format!("Failed to upload final part: {}", e)))?;
+        }
+
+        // Complete multipart upload
+        upload
+            .complete()
+            .await
+            .map_err(|e| StorageError::S3(format!("Failed to complete multipart upload: {}", e)))?;
 
         // Verify digest
         let computed = format!("sha256:{}", hex::encode(hasher.finalize()));
         if computed != digest {
+            // Clean up the uploaded object
+            let _ = self.store.delete(&path).await;
             return Err(StorageError::DigestMismatch {
                 expected: digest.to_string(),
                 actual: computed,
             });
         }
-
-        // Upload to S3
-        self.store
-            .put(&path, PutPayload::from(Bytes::from(data)))
-            .await
-            .map_err(|e| StorageError::S3(e.to_string()))?;
 
         Ok(path.to_string())
     }
@@ -350,7 +376,7 @@ impl StorageBackend for S3Storage {
             upload_path, blob_path
         );
 
-        // Read uploaded data
+        // Stream uploaded data to compute digest without buffering entire blob
         let result = self.store.get(&upload_path).await.map_err(|e| match e {
             object_store::Error::NotFound { .. } => {
                 StorageError::NotFound(format!("Upload session: {}", session_id))
@@ -358,13 +384,18 @@ impl StorageBackend for S3Storage {
             _ => StorageError::S3(e.to_string()),
         })?;
 
-        let data = result
-            .bytes()
-            .await
-            .map_err(|e| StorageError::S3(format!("Failed to read upload data: {}", e)))?;
+        let mut stream = result.into_stream();
+        let mut hasher = Sha256::new();
+
+        // Stream through data to compute digest without buffering
+        while let Some(chunk_result) = stream.next().await {
+            let chunk = chunk_result
+                .map_err(|e| StorageError::S3(format!("Failed to read chunk: {}", e)))?;
+            hasher.update(&chunk);
+        }
 
         // Verify digest
-        let computed = compute_sha256(&data);
+        let computed = format!("sha256:{}", hex::encode(hasher.finalize()));
         if computed != digest {
             // Clean up
             let _ = self.store.delete(&upload_path).await;
@@ -374,11 +405,11 @@ impl StorageBackend for S3Storage {
             });
         }
 
-        // Copy to final location
+        // Use S3 copy operation to move to final location without re-downloading
         self.store
-            .put(&blob_path, PutPayload::from(data))
+            .copy(&upload_path, &blob_path)
             .await
-            .map_err(|e| StorageError::S3(e.to_string()))?;
+            .map_err(|e| StorageError::S3(format!("Failed to copy to final location: {}", e)))?;
 
         // Delete upload file
         let _ = self.store.delete(&upload_path).await;
