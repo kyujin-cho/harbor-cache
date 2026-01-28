@@ -282,12 +282,8 @@ impl RegistryService {
         // Convert ProxyError stream to StorageError stream for caching
         use futures::StreamExt;
         let storage_stream: harbor_storage::backend::ByteStream = Box::pin(stream.map(|result| {
-            result.map_err(|e| {
-                harbor_storage::StorageError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
-            })
+            result
+                .map_err(|e| harbor_storage::StorageError::Io(std::io::Error::other(e.to_string())))
         }));
 
         // Tee the stream: one copy to cache, one copy to return
@@ -597,10 +593,7 @@ impl RegistryService {
             let storage_stream: harbor_storage::backend::ByteStream =
                 Box::pin(proxy_stream.map(|result| {
                     result.map_err(|e| {
-                        harbor_storage::StorageError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            e.to_string(),
-                        ))
+                        harbor_storage::StorageError::Io(std::io::Error::other(e.to_string()))
                     })
                 }));
 

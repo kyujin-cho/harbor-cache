@@ -201,6 +201,7 @@ impl CacheManager {
     }
 
     /// Store a blob/manifest in the cache from a stream (avoids buffering entire blob in memory)
+    #[allow(clippy::too_many_arguments)]
     pub async fn put_stream(
         &self,
         entry_type: EntryType,
@@ -265,6 +266,7 @@ impl CacheManager {
     /// 3. Returns the channel receiver as a stream, plus a task handle for error checking
     ///
     /// Memory usage is bounded: 8 chunks × chunk_size (typically 1MB) = ~8MB per request
+    #[allow(clippy::too_many_arguments)]
     pub async fn tee_and_cache_stream(
         &self,
         entry_type: EntryType,
@@ -333,14 +335,14 @@ impl CacheManager {
                             }
                         }
                         Err(e) => {
-                            let _ =
-                                tx.send(Err(harbor_storage::StorageError::Io(
-                                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
+                            let _ = tx
+                                .send(Err(harbor_storage::StorageError::Io(
+                                    std::io::Error::other(e.to_string()),
                                 )))
                                 .await;
                             let _ = storage_tx.send(Err(e)).await;
                             return Err(CoreError::Storage(harbor_storage::StorageError::Io(
-                                std::io::Error::new(std::io::ErrorKind::Other, "Stream error"),
+                                std::io::Error::other("Stream error"),
                             )));
                         }
                     }

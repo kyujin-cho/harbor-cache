@@ -453,7 +453,7 @@ impl HarborClient {
         use futures::StreamExt;
         let stream = response.bytes_stream();
         let byte_stream: ByteStream =
-            Box::pin(stream.map(|result| result.map_err(|e| ProxyError::Http(e))));
+            Box::pin(stream.map(|result| result.map_err(ProxyError::Http)));
 
         Ok((byte_stream, size))
     }
@@ -648,8 +648,7 @@ impl HarborClient {
 
         // Convert ByteStream to reqwest::Body
         use futures::TryStreamExt;
-        let reqwest_stream =
-            stream.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
+        let reqwest_stream = stream.map_err(|e| std::io::Error::other(e.to_string()));
         let body = reqwest::Body::wrap_stream(reqwest_stream);
 
         let response = self
