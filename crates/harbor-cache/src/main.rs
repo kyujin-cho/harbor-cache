@@ -55,6 +55,10 @@ async fn main() -> Result<()> {
     info!("Starting Harbor Cache v{}", env!("CARGO_PKG_VERSION"));
 
     // Initialize database
+    let db_file_path = std::path::Path::new(&config.database.path);
+    if let Some(parent) = db_file_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let db_path = format!("sqlite:{}?mode=rwc", config.database.path);
     let db = Database::new(&db_path).await?;
 
