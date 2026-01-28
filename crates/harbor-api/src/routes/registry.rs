@@ -176,12 +176,19 @@ async fn handle_get_or_head_request(
                 }
             } else {
                 debug!("GET blob: {}", digest);
-                let data = state.registry.get_blob(&name, &digest).await?;
-                let mut response = (StatusCode::OK, data).into_response();
+                let (stream, size) = state.registry.get_blob(&name, &digest).await?;
+
+                // Stream the blob data to the client (bounded memory usage)
+                let body = axum::body::Body::from_stream(stream);
+                let mut response = (StatusCode::OK, body).into_response();
                 let headers = response.headers_mut();
                 headers.insert(
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("application/octet-stream"),
+                );
+                headers.insert(
+                    header::CONTENT_LENGTH,
+                    HeaderValue::from(size),
                 );
                 headers.insert(
                     "Docker-Content-Digest",
