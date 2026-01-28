@@ -25,32 +25,49 @@ use crate::state::AppState;
 fn validate_repository_name(name: &str) -> Result<(), ApiError> {
     // Check length limits
     if name.is_empty() {
-        return Err(ApiError::BadRequest("Repository name cannot be empty".to_string()));
+        return Err(ApiError::BadRequest(
+            "Repository name cannot be empty".to_string(),
+        ));
     }
     if name.len() > 256 {
-        return Err(ApiError::BadRequest("Repository name exceeds maximum length of 256 characters".to_string()));
+        return Err(ApiError::BadRequest(
+            "Repository name exceeds maximum length of 256 characters".to_string(),
+        ));
     }
 
     // Check for path traversal sequences
     if name.contains("..") {
-        return Err(ApiError::BadRequest("Repository name contains invalid path traversal sequence".to_string()));
+        return Err(ApiError::BadRequest(
+            "Repository name contains invalid path traversal sequence".to_string(),
+        ));
     }
 
     // Must not start or end with slash, dot, underscore, or dash
     let first_char = name.chars().next().unwrap();
     let last_char = name.chars().last().unwrap();
     if !first_char.is_ascii_lowercase() && !first_char.is_ascii_digit() {
-        return Err(ApiError::BadRequest("Repository name must start with lowercase letter or digit".to_string()));
+        return Err(ApiError::BadRequest(
+            "Repository name must start with lowercase letter or digit".to_string(),
+        ));
     }
     if !last_char.is_ascii_lowercase() && !last_char.is_ascii_digit() {
-        return Err(ApiError::BadRequest("Repository name must end with lowercase letter or digit".to_string()));
+        return Err(ApiError::BadRequest(
+            "Repository name must end with lowercase letter or digit".to_string(),
+        ));
     }
 
     // Validate each character
     for ch in name.chars() {
-        if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '.' && ch != '_' && ch != '-' && ch != '/' {
+        if !ch.is_ascii_lowercase()
+            && !ch.is_ascii_digit()
+            && ch != '.'
+            && ch != '_'
+            && ch != '-'
+            && ch != '/'
+        {
             return Err(ApiError::BadRequest(format!(
-                "Repository name contains invalid character: '{}'", ch
+                "Repository name contains invalid character: '{}'",
+                ch
             )));
         }
     }
@@ -60,7 +77,9 @@ fn validate_repository_name(name: &str) -> Result<(), ApiError> {
     for ch in name.chars() {
         let is_special = ch == '/' || ch == '.' || ch == '_' || ch == '-';
         if is_special && prev_special {
-            return Err(ApiError::BadRequest("Repository name contains consecutive special characters".to_string()));
+            return Err(ApiError::BadRequest(
+                "Repository name contains consecutive special characters".to_string(),
+            ));
         }
         prev_special = is_special;
     }
@@ -77,28 +96,37 @@ fn validate_repository_name(name: &str) -> Result<(), ApiError> {
 fn validate_tag_reference(tag: &str) -> Result<(), ApiError> {
     // Check length limits
     if tag.is_empty() {
-        return Err(ApiError::BadRequest("Tag reference cannot be empty".to_string()));
+        return Err(ApiError::BadRequest(
+            "Tag reference cannot be empty".to_string(),
+        ));
     }
     if tag.len() > 128 {
-        return Err(ApiError::BadRequest("Tag reference exceeds maximum length of 128 characters".to_string()));
+        return Err(ApiError::BadRequest(
+            "Tag reference exceeds maximum length of 128 characters".to_string(),
+        ));
     }
 
     // Check for path traversal sequences
     if tag.contains("..") || tag.contains('/') {
-        return Err(ApiError::BadRequest("Tag reference contains invalid characters".to_string()));
+        return Err(ApiError::BadRequest(
+            "Tag reference contains invalid characters".to_string(),
+        ));
     }
 
     // First character must be alphanumeric or underscore
     let first_char = tag.chars().next().unwrap();
     if !first_char.is_ascii_alphanumeric() && first_char != '_' {
-        return Err(ApiError::BadRequest("Tag reference must start with alphanumeric character or underscore".to_string()));
+        return Err(ApiError::BadRequest(
+            "Tag reference must start with alphanumeric character or underscore".to_string(),
+        ));
     }
 
     // Remaining characters must be alphanumeric, underscore, dot, or dash
     for ch in tag.chars() {
         if !ch.is_ascii_alphanumeric() && ch != '_' && ch != '.' && ch != '-' {
             return Err(ApiError::BadRequest(format!(
-                "Tag reference contains invalid character: '{}'", ch
+                "Tag reference contains invalid character: '{}'",
+                ch
             )));
         }
     }
@@ -302,10 +330,7 @@ async fn handle_get_or_head_request(
                 // When upstream omits Content-Length (size=0), omitting it here
                 // lets axum use chunked transfer encoding automatically.
                 if size > 0 {
-                    headers.insert(
-                        header::CONTENT_LENGTH,
-                        HeaderValue::from(size),
-                    );
+                    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
                 }
                 headers.insert(
                     "Docker-Content-Digest",

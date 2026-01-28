@@ -22,28 +22,37 @@ use crate::error::CoreError;
 fn validate_tag_reference(tag: &str) -> Result<(), CoreError> {
     // Check length limits
     if tag.is_empty() {
-        return Err(CoreError::BadRequest("Tag reference cannot be empty".to_string()));
+        return Err(CoreError::BadRequest(
+            "Tag reference cannot be empty".to_string(),
+        ));
     }
     if tag.len() > 128 {
-        return Err(CoreError::BadRequest("Tag reference exceeds maximum length of 128 characters".to_string()));
+        return Err(CoreError::BadRequest(
+            "Tag reference exceeds maximum length of 128 characters".to_string(),
+        ));
     }
 
     // Check for path traversal sequences
     if tag.contains("..") || tag.contains('/') {
-        return Err(CoreError::BadRequest("Tag reference contains invalid characters".to_string()));
+        return Err(CoreError::BadRequest(
+            "Tag reference contains invalid characters".to_string(),
+        ));
     }
 
     // First character must be alphanumeric or underscore
     let first_char = tag.chars().next().unwrap();
     if !first_char.is_ascii_alphanumeric() && first_char != '_' {
-        return Err(CoreError::BadRequest("Tag reference must start with alphanumeric character or underscore".to_string()));
+        return Err(CoreError::BadRequest(
+            "Tag reference must start with alphanumeric character or underscore".to_string(),
+        ));
     }
 
     // Remaining characters must be alphanumeric, underscore, dot, or dash
     for ch in tag.chars() {
         if !ch.is_ascii_alphanumeric() && ch != '_' && ch != '.' && ch != '-' {
             return Err(CoreError::BadRequest(format!(
-                "Tag reference contains invalid character: '{}'", ch
+                "Tag reference contains invalid character: '{}'",
+                ch
             )));
         }
     }
@@ -273,9 +282,12 @@ impl RegistryService {
         // Convert ProxyError stream to StorageError stream for caching
         use futures::StreamExt;
         let storage_stream: harbor_storage::backend::ByteStream = Box::pin(stream.map(|result| {
-            result.map_err(|e| harbor_storage::StorageError::Io(
-                std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-            ))
+            result.map_err(|e| {
+                harbor_storage::StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })
         }));
 
         // Tee the stream: one copy to cache, one copy to return
@@ -320,7 +332,11 @@ impl RegistryService {
 
     /// Get a blob fully buffered (for cases that need in-memory data)
     #[allow(dead_code)]
-    pub async fn get_blob_buffered(&self, repository: &str, digest: &str) -> Result<Bytes, CoreError> {
+    pub async fn get_blob_buffered(
+        &self,
+        repository: &str,
+        digest: &str,
+    ) -> Result<Bytes, CoreError> {
         // Validate digest format at service boundary to prevent path traversal
         harbor_storage::backend::validate_digest(digest)?;
         debug!("Getting blob buffered: {}", digest);
@@ -419,7 +435,10 @@ impl RegistryService {
                 )));
             }
             // Must be lowercase hex only
-            if !part.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+            if !part
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            {
                 return Err(CoreError::BadRequest(format!(
                     "Invalid session ID format (must be lowercase hex): {}",
                     session_id
@@ -506,9 +525,10 @@ impl RegistryService {
 
         // Convert StorageError stream to ProxyError stream for upstream
         use futures::StreamExt;
-        let proxy_stream: harbor_proxy::client::ByteStream = Box::pin(storage_stream.map(|result| {
-            result.map_err(|e| harbor_proxy::ProxyError::InvalidResponse(e.to_string()))
-        }));
+        let proxy_stream: harbor_proxy::client::ByteStream =
+            Box::pin(storage_stream.map(|result| {
+                result.map_err(|e| harbor_proxy::ProxyError::InvalidResponse(e.to_string()))
+            }));
 
         // Push to upstream with streaming
         self.upstream
@@ -574,11 +594,15 @@ impl RegistryService {
 
             // Convert ProxyError stream to StorageError stream for caching
             use futures::StreamExt;
-            let storage_stream: harbor_storage::backend::ByteStream = Box::pin(proxy_stream.map(|result| {
-                result.map_err(|e| harbor_storage::StorageError::Io(
-                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-                ))
-            }));
+            let storage_stream: harbor_storage::backend::ByteStream =
+                Box::pin(proxy_stream.map(|result| {
+                    result.map_err(|e| {
+                        harbor_storage::StorageError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            e.to_string(),
+                        ))
+                    })
+                }));
 
             self.cache
                 .put_stream(

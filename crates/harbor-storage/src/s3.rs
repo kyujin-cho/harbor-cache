@@ -244,11 +244,10 @@ impl StorageBackend for S3Storage {
         debug!("Writing blob stream to S3: {:?}", path);
 
         // Use S3 multipart upload to avoid buffering entire blob in memory
-        let mut upload = self
-            .store
-            .put_multipart(&path)
-            .await
-            .map_err(|e| StorageError::S3(format!("Failed to start multipart upload: {}", e)))?;
+        let mut upload =
+            self.store.put_multipart(&path).await.map_err(|e| {
+                StorageError::S3(format!("Failed to start multipart upload: {}", e))
+            })?;
 
         let mut hasher = Sha256::new();
         let mut buffer = Vec::with_capacity(5 * 1024 * 1024); // 5MB minimum part size for S3

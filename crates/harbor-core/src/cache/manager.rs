@@ -4,7 +4,7 @@ use bytes::Bytes;
 use chrono::{Duration, Utc};
 use futures::StreamExt;
 use harbor_db::{CacheEntry, CacheStats, Database, EntryType, NewCacheEntry};
-use harbor_storage::{backend::ByteStream, StorageBackend};
+use harbor_storage::{StorageBackend, backend::ByteStream};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -231,7 +231,10 @@ impl CacheManager {
         }
 
         // Write to storage
-        let storage_path = self.storage.write_stream(digest, stream, expected_size).await?;
+        let storage_path = self
+            .storage
+            .write_stream(digest, stream, expected_size)
+            .await?;
 
         // Get actual size from storage
         let actual_size = self.storage.size(digest).await? as i64;
@@ -271,7 +274,13 @@ impl CacheManager {
         content_type: &str,
         mut source_stream: ByteStream,
         expected_size: Option<u64>,
-    ) -> Result<(ByteStream, tokio::task::JoinHandle<Result<CacheEntry, CoreError>>), CoreError> {
+    ) -> Result<
+        (
+            ByteStream,
+            tokio::task::JoinHandle<Result<CacheEntry, CoreError>>,
+        ),
+        CoreError,
+    > {
         debug!(
             "Teeing stream for {} {} (expected size: {:?})",
             entry_type.as_str(),
@@ -324,12 +333,9 @@ impl CacheManager {
                             }
                         }
                         Err(e) => {
-                            let _ = tx
-                                .send(Err(harbor_storage::StorageError::Io(
-                                    std::io::Error::new(
-                                        std::io::ErrorKind::Other,
-                                        e.to_string(),
-                                    ),
+                            let _ =
+                                tx.send(Err(harbor_storage::StorageError::Io(
+                                    std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
                                 )))
                                 .await;
                             let _ = storage_tx.send(Err(e)).await;

@@ -117,7 +117,10 @@ pub fn validate_digest(digest: &str) -> Result<(), StorageError> {
     }
 
     // Hash must be lowercase hexadecimal only (prevents path traversal)
-    if !hash.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+    if !hash
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
         return Err(StorageError::InvalidDigest(format!(
             "Hash contains invalid characters (must be lowercase hex): {}",
             digest

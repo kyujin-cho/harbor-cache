@@ -452,9 +452,8 @@ impl HarborClient {
         // Convert reqwest's BytesStream to our ByteStream type
         use futures::StreamExt;
         let stream = response.bytes_stream();
-        let byte_stream: ByteStream = Box::pin(stream.map(|result| {
-            result.map_err(|e| ProxyError::Http(e))
-        }));
+        let byte_stream: ByteStream =
+            Box::pin(stream.map(|result| result.map_err(|e| ProxyError::Http(e))));
 
         Ok((byte_stream, size))
     }
@@ -639,11 +638,7 @@ impl HarborClient {
             )
         };
 
-        debug!(
-            "Completing blob upload: {} ({} bytes)",
-            upload_url,
-            size
-        );
+        debug!("Completing blob upload: {} ({} bytes)", upload_url, size);
 
         let size_str = size.to_string();
         let headers = vec![
@@ -653,9 +648,8 @@ impl HarborClient {
 
         // Convert ByteStream to reqwest::Body
         use futures::TryStreamExt;
-        let reqwest_stream = stream.map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
-        });
+        let reqwest_stream =
+            stream.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()));
         let body = reqwest::Body::wrap_stream(reqwest_stream);
 
         let response = self
