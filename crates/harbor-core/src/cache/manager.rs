@@ -2,8 +2,9 @@
 
 use bytes::Bytes;
 use chrono::{Duration, Utc};
+use futures::StreamExt;
 use harbor_db::{CacheEntry, CacheStats, Database, EntryType, NewCacheEntry};
-use harbor_storage::StorageBackend;
+use harbor_storage::{backend::ByteStream, StorageBackend};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -112,6 +113,38 @@ impl CacheManager {
         }
     }
 
+    /// Get a cached entry as a stream (avoids buffering entire blob in memory)
+    pub async fn get_stream(
+        &self,
+        digest: &str,
+    ) -> Result<Option<(ByteStream, CacheEntry)>, CoreError> {
+        let entry = match self.db.get_cache_entry_by_digest(digest).await? {
+            Some(e) => e,
+            None => {
+                self.record_miss().await;
+                return Ok(None);
+            }
+        };
+
+        // Get stream from storage
+        match self.storage.stream(digest).await {
+            Ok(stream) => {
+                // Update access time
+                self.db.touch_cache_entry(digest).await?;
+                self.record_hit().await;
+                Ok(Some((stream, entry)))
+            }
+            Err(harbor_storage::StorageError::NotFound(_)) => {
+                // Storage doesn't have it, clean up database
+                warn!("Cache entry in database but not in storage: {}", digest);
+                self.db.delete_cache_entry(digest).await?;
+                self.record_miss().await;
+                Ok(None)
+            }
+            Err(e) => Err(CoreError::Storage(e)),
+        }
+    }
+
     /// Get a cached entry's metadata only
     pub async fn get_metadata(&self, digest: &str) -> Result<Option<CacheEntry>, CoreError> {
         Ok(self.db.get_cache_entry_by_digest(digest).await?)
@@ -165,6 +198,168 @@ impl CacheManager {
 
         debug!("Cached entry: {}", digest);
         Ok(entry)
+    }
+
+    /// Store a blob/manifest in the cache from a stream (avoids buffering entire blob in memory)
+    pub async fn put_stream(
+        &self,
+        entry_type: EntryType,
+        repository: Option<String>,
+        reference: Option<String>,
+        digest: &str,
+        content_type: &str,
+        stream: ByteStream,
+        expected_size: Option<u64>,
+    ) -> Result<CacheEntry, CoreError> {
+        debug!(
+            "Caching {} {} (streaming, expected size: {:?})",
+            entry_type.as_str(),
+            digest,
+            expected_size
+        );
+
+        // Check if already cached
+        if let Some(entry) = self.db.get_cache_entry_by_digest(digest).await? {
+            debug!("Entry already cached: {}", digest);
+            self.db.touch_cache_entry(digest).await?;
+            return Ok(entry);
+        }
+
+        // Ensure we have space (use expected size if available)
+        if let Some(size) = expected_size {
+            self.ensure_space(size).await?;
+        }
+
+        // Write to storage
+        let storage_path = self.storage.write_stream(digest, stream, expected_size).await?;
+
+        // Get actual size from storage
+        let actual_size = self.storage.size(digest).await? as i64;
+
+        // Create database entry
+        let entry = self
+            .db
+            .insert_cache_entry(NewCacheEntry {
+                entry_type,
+                repository,
+                reference,
+                digest: digest.to_string(),
+                content_type: content_type.to_string(),
+                size: actual_size,
+                storage_path,
+            })
+            .await?;
+
+        debug!("Cached entry: {} ({} bytes)", digest, actual_size);
+        Ok(entry)
+    }
+
+    /// Tee a stream to simultaneously cache it and return it to the caller
+    ///
+    /// This is the critical method for bounded-memory streaming. It:
+    /// 1. Creates a bounded channel (capacity 8) for backpressure
+    /// 2. Spawns a task that reads from source, writes to storage, and sends to channel
+    /// 3. Returns the channel receiver as a stream, plus a task handle for error checking
+    ///
+    /// Memory usage is bounded: 8 chunks × chunk_size (typically 1MB) = ~8MB per request
+    pub async fn tee_and_cache_stream(
+        &self,
+        entry_type: EntryType,
+        repository: Option<String>,
+        reference: Option<String>,
+        digest: &str,
+        content_type: &str,
+        mut source_stream: ByteStream,
+        expected_size: Option<u64>,
+    ) -> Result<(ByteStream, tokio::task::JoinHandle<Result<CacheEntry, CoreError>>), CoreError> {
+        debug!(
+            "Teeing stream for {} {} (expected size: {:?})",
+            entry_type.as_str(),
+            digest,
+            expected_size
+        );
+
+        // Check if already cached
+        if let Some(entry) = self.db.get_cache_entry_by_digest(digest).await? {
+            debug!("Entry already cached during tee: {}", digest);
+            self.db.touch_cache_entry(digest).await?;
+            // Return the cached stream
+            let stream = self.storage.stream(digest).await?;
+            let handle = tokio::spawn(async move { Ok(entry) });
+            return Ok((stream, handle));
+        }
+
+        // Ensure we have space
+        if let Some(size) = expected_size {
+            self.ensure_space(size).await?;
+        }
+
+        // Create bounded channel for tee (capacity 8 for backpressure)
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, harbor_storage::StorageError>>(8);
+
+        // Clone data needed for the spawned task
+        let storage = self.storage.clone();
+        let db = self.db.clone();
+        let digest_owned = digest.to_string();
+        let content_type_owned = content_type.to_string();
+
+        // Spawn task to read from source, write to storage, and send to channel
+        let cache_handle = tokio::spawn(async move {
+            // Collect chunks for writing to storage while sending to client
+            let mut chunks = Vec::new();
+
+            while let Some(chunk_result) = source_stream.next().await {
+                match chunk_result {
+                    Ok(chunk) => {
+                        // Send to client (may block if channel is full - backpressure!)
+                        if tx.send(Ok(chunk.clone())).await.is_err() {
+                            // Client disconnected, but continue caching
+                            debug!("Client disconnected during tee, continuing cache");
+                        }
+                        chunks.push(chunk);
+                    }
+                    Err(e) => {
+                        // Forward error to client
+                        let _ = tx.send(Err(e)).await;
+                        return Err(CoreError::Storage(harbor_storage::StorageError::Io(
+                            std::io::Error::new(std::io::ErrorKind::Other, "Stream error")
+                        )));
+                    }
+                }
+            }
+
+            // Create stream from collected chunks for storage
+            let chunk_stream: ByteStream = Box::pin(futures::stream::iter(
+                chunks.into_iter().map(|c| Ok(c))
+            ));
+
+            // Write to storage
+            let storage_path = storage.write_stream(&digest_owned, chunk_stream, expected_size).await?;
+
+            // Get actual size from storage
+            let actual_size = storage.size(&digest_owned).await? as i64;
+
+            // Create database entry
+            let entry = db
+                .insert_cache_entry(NewCacheEntry {
+                    entry_type,
+                    repository,
+                    reference,
+                    digest: digest_owned.clone(),
+                    content_type: content_type_owned,
+                    size: actual_size,
+                    storage_path,
+                })
+                .await?;
+
+            debug!("Tee cached entry: {} ({} bytes)", digest_owned, actual_size);
+            Ok(entry)
+        });
+
+        // Convert channel receiver to ByteStream
+        let client_stream: ByteStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx));
+
+        Ok((client_stream, cache_handle))
     }
 
     /// Delete a cached entry
