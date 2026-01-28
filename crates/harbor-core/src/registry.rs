@@ -11,6 +11,59 @@ use uuid::Uuid;
 use crate::cache::CacheManager;
 use crate::error::CoreError;
 
+// ==================== Input Validation ====================
+
+/// Validate OCI tag reference format at service boundary.
+/// Tags must match the pattern: `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`
+///
+/// This allows: alphanumeric, underscores, dots, and dashes.
+/// Must start with alphanumeric or underscore.
+/// Maximum length is 128 characters.
+fn validate_tag_reference(tag: &str) -> Result<(), CoreError> {
+    // Check length limits
+    if tag.is_empty() {
+        return Err(CoreError::BadRequest("Tag reference cannot be empty".to_string()));
+    }
+    if tag.len() > 128 {
+        return Err(CoreError::BadRequest("Tag reference exceeds maximum length of 128 characters".to_string()));
+    }
+
+    // Check for path traversal sequences
+    if tag.contains("..") || tag.contains('/') {
+        return Err(CoreError::BadRequest("Tag reference contains invalid characters".to_string()));
+    }
+
+    // First character must be alphanumeric or underscore
+    let first_char = tag.chars().next().unwrap();
+    if !first_char.is_ascii_alphanumeric() && first_char != '_' {
+        return Err(CoreError::BadRequest("Tag reference must start with alphanumeric character or underscore".to_string()));
+    }
+
+    // Remaining characters must be alphanumeric, underscore, dot, or dash
+    for ch in tag.chars() {
+        if !ch.is_ascii_alphanumeric() && ch != '_' && ch != '.' && ch != '-' {
+            return Err(CoreError::BadRequest(format!(
+                "Tag reference contains invalid character: '{}'", ch
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate a manifest reference (either a tag or a digest).
+/// Digests are validated separately; this validates tags.
+fn validate_reference(reference: &str) -> Result<(), CoreError> {
+    // If it's a digest, validate as digest
+    if reference.starts_with("sha256:") || reference.starts_with("sha512:") {
+        harbor_storage::backend::validate_digest(reference)?;
+        return Ok(());
+    }
+
+    // Otherwise validate as a tag
+    validate_tag_reference(reference)
+}
+
 /// Registry service handling OCI Distribution API operations
 pub struct RegistryService {
     cache: Arc<CacheManager>,
@@ -43,11 +96,9 @@ impl RegistryService {
         repository: &str,
         reference: &str,
     ) -> Result<(Bytes, String, String), CoreError> {
-        // Validate digest format at service boundary to prevent path traversal
-        // when reference is a digest (starts with sha256: or sha512:)
-        if reference.starts_with("sha256:") || reference.starts_with("sha512:") {
-            harbor_storage::backend::validate_digest(reference)?;
-        }
+        // Validate reference format at service boundary to prevent path traversal
+        // and ensure tag/digest format compliance
+        validate_reference(reference)?;
 
         // First, check if reference is a digest
         let _cache_key = if reference.starts_with("sha256:") {
@@ -114,10 +165,9 @@ impl RegistryService {
         repository: &str,
         reference: &str,
     ) -> Result<Option<(String, String, i64)>, CoreError> {
-        // Validate digest format at service boundary to prevent path traversal
-        if reference.starts_with("sha256:") || reference.starts_with("sha512:") {
-            harbor_storage::backend::validate_digest(reference)?;
-        }
+        // Validate reference format at service boundary to prevent path traversal
+        // and ensure tag/digest format compliance
+        validate_reference(reference)?;
 
         // Check cache first if reference is a digest
         if reference.starts_with("sha256:")
@@ -146,11 +196,9 @@ impl RegistryService {
         content_type: &str,
         data: Bytes,
     ) -> Result<String, CoreError> {
-        // Validate digest format at service boundary to prevent path traversal
-        // when reference is a digest (starts with sha256: or sha512:)
-        if reference.starts_with("sha256:") || reference.starts_with("sha512:") {
-            harbor_storage::backend::validate_digest(reference)?;
-        }
+        // Validate reference format at service boundary to prevent path traversal
+        // and ensure tag/digest format compliance
+        validate_reference(reference)?;
 
         debug!("Pushing manifest: {}:{}", repository, reference);
 
