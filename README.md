@@ -92,16 +92,25 @@ backend = "local"  # local or s3
 path = "./data/cache"
 
 [storage.s3]
-bucket = "harbor-cache"
-region = "us-east-1"
-endpoint = "http://localhost:9000"  # For MinIO
-access_key = "minioadmin"
-secret_key = "minioadmin"
-allow_http = true
+# S3 configuration (used when backend = "s3")
+# bucket = "harbor-cache"
+# region = "us-east-1"
+# endpoint = "http://localhost:9000"  # For MinIO or other S3-compatible services
+# access_key = ""
+# secret_key = ""
+# prefix = ""  # Optional prefix for all objects
+# allow_http = false  # Allow HTTP (not HTTPS) for MinIO local dev
+
+[database]
+path = "./data/harbor-cache.db"
 
 [auth]
 jwt_secret = "change-me-in-production"
 enabled = true
+
+[logging]
+level = "info"     # trace, debug, info, warn, error
+format = "pretty"  # pretty or json
 
 [tls]
 enabled = false
