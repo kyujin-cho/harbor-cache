@@ -10,7 +10,6 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data
-      - ./static:/app/static:ro
     environment:
       - RUST_LOG=info
     restart: unless-stopped
