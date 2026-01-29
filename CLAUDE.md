@@ -160,5 +160,21 @@ docker compose up -d
 docker compose --profile s3 up -d
 ```
 
+## Release Process
+
+When creating a new release:
+
+1. **Update version in `Cargo.toml`**: Before creating a release tag, update the `version` field in the workspace package section of the root `Cargo.toml` to match the new release version:
+   ```toml
+   [workspace.package]
+   version = "X.Y.Z"  # Update this to match the release tag
+   ```
+
+2. **Commit the version bump**: Commit the `Cargo.toml` and `Cargo.lock` changes with a message like `chore: bump version to X.Y.Z`
+
+3. **Create the release**: Use `gh release create vX.Y.Z` to create the GitHub release, which triggers the release workflow
+
+4. **Verify**: The release workflow will build binaries and Docker images with the correct version
+
 ## Programming rules
 - At the end of every implementation cycle, verify if the feature is working with the test cluster. Repeat the test cycle until the bugs are sorted out. After that, commit the changes to local git repository.
