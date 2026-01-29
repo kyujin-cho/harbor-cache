@@ -143,7 +143,8 @@ async fn main() -> Result<()> {
     let jwt = Arc::new(JwtManager::new(&config.auth.jwt_secret, 24));
 
     // Create application state
-    let state = AppState::new(db, cache, registry, storage, jwt, config.auth.enabled);
+    let state = AppState::new(db, cache, registry, storage, jwt, config.auth.enabled)
+        .with_config_path(args.config.clone());
 
     // Initialize Prometheus metrics
     let metrics_handle = init_metrics();

@@ -8,6 +8,7 @@ use crate::state::AppState;
 mod auth;
 mod cache;
 mod config;
+mod logs;
 mod types;
 mod users;
 
@@ -18,4 +19,5 @@ pub fn routes() -> Router<AppState> {
         .merge(users::routes())
         .merge(cache::routes())
         .merge(config::routes())
+        .merge(logs::routes())
 }
