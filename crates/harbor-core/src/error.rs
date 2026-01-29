@@ -19,6 +19,9 @@ pub enum CoreError {
     #[error("Invalid digest: {0}")]
     InvalidDigest(String),
 
+    #[error("Bad request: {0}")]
+    BadRequest(String),
+
     #[error("Cache miss")]
     CacheMiss,
 }

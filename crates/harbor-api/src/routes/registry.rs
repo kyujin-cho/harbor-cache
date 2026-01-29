@@ -14,6 +14,138 @@ use tracing::debug;
 use crate::error::ApiError;
 use crate::state::AppState;
 
+// ==================== Input Validation ====================
+
+/// Validate repository name to prevent path injection attacks.
+/// Repository names must match the OCI distribution spec pattern:
+/// `[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*`
+///
+/// This allows: lowercase alphanumeric, dots, underscores, dashes, and slashes for namespacing.
+/// Maximum length is 256 characters.
+fn validate_repository_name(name: &str) -> Result<(), ApiError> {
+    // Check length limits
+    if name.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Repository name cannot be empty".to_string(),
+        ));
+    }
+    if name.len() > 256 {
+        return Err(ApiError::BadRequest(
+            "Repository name exceeds maximum length of 256 characters".to_string(),
+        ));
+    }
+
+    // Check for path traversal sequences
+    if name.contains("..") {
+        return Err(ApiError::BadRequest(
+            "Repository name contains invalid path traversal sequence".to_string(),
+        ));
+    }
+
+    // Must not start or end with slash, dot, underscore, or dash
+    let first_char = name.chars().next().unwrap();
+    let last_char = name.chars().last().unwrap();
+    if !first_char.is_ascii_lowercase() && !first_char.is_ascii_digit() {
+        return Err(ApiError::BadRequest(
+            "Repository name must start with lowercase letter or digit".to_string(),
+        ));
+    }
+    if !last_char.is_ascii_lowercase() && !last_char.is_ascii_digit() {
+        return Err(ApiError::BadRequest(
+            "Repository name must end with lowercase letter or digit".to_string(),
+        ));
+    }
+
+    // Validate each character
+    for ch in name.chars() {
+        if !ch.is_ascii_lowercase()
+            && !ch.is_ascii_digit()
+            && ch != '.'
+            && ch != '_'
+            && ch != '-'
+            && ch != '/'
+        {
+            return Err(ApiError::BadRequest(format!(
+                "Repository name contains invalid character: '{}'",
+                ch
+            )));
+        }
+    }
+
+    // Check for consecutive special characters (e.g., //, .., etc.)
+    let mut prev_special = false;
+    for ch in name.chars() {
+        let is_special = ch == '/' || ch == '.' || ch == '_' || ch == '-';
+        if is_special && prev_special {
+            return Err(ApiError::BadRequest(
+                "Repository name contains consecutive special characters".to_string(),
+            ));
+        }
+        prev_special = is_special;
+    }
+
+    Ok(())
+}
+
+/// Validate OCI tag reference format.
+/// Tags must match the pattern: `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`
+///
+/// This allows: alphanumeric, underscores, dots, and dashes.
+/// Must start with alphanumeric or underscore.
+/// Maximum length is 128 characters.
+fn validate_tag_reference(tag: &str) -> Result<(), ApiError> {
+    // Check length limits
+    if tag.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Tag reference cannot be empty".to_string(),
+        ));
+    }
+    if tag.len() > 128 {
+        return Err(ApiError::BadRequest(
+            "Tag reference exceeds maximum length of 128 characters".to_string(),
+        ));
+    }
+
+    // Check for path traversal sequences
+    if tag.contains("..") || tag.contains('/') {
+        return Err(ApiError::BadRequest(
+            "Tag reference contains invalid characters".to_string(),
+        ));
+    }
+
+    // First character must be alphanumeric or underscore
+    let first_char = tag.chars().next().unwrap();
+    if !first_char.is_ascii_alphanumeric() && first_char != '_' {
+        return Err(ApiError::BadRequest(
+            "Tag reference must start with alphanumeric character or underscore".to_string(),
+        ));
+    }
+
+    // Remaining characters must be alphanumeric, underscore, dot, or dash
+    for ch in tag.chars() {
+        if !ch.is_ascii_alphanumeric() && ch != '_' && ch != '.' && ch != '-' {
+            return Err(ApiError::BadRequest(format!(
+                "Tag reference contains invalid character: '{}'",
+                ch
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate a manifest reference (either a tag or a digest).
+/// Digests are validated by the core layer; this validates tags.
+fn validate_reference(reference: &str) -> Result<(), ApiError> {
+    // If it's a digest, skip validation here (core layer validates digests)
+    if reference.starts_with("sha256:") || reference.starts_with("sha512:") {
+        return Ok(());
+    }
+
+    // Otherwise validate as a tag
+    validate_tag_reference(reference)
+}
+
 /// Query parameters for blob upload completion
 #[derive(Deserialize)]
 pub struct UploadCompleteQuery {
@@ -116,6 +248,10 @@ async fn handle_get_or_head_request(
 
     match req {
         RegistryRequest::Manifest { name, reference } => {
+            // Validate inputs at API boundary before logging or processing
+            validate_repository_name(&name)?;
+            validate_reference(&reference)?;
+
             if method == axum::http::Method::HEAD {
                 debug!("HEAD manifest: {}:{}", name, reference);
                 let result = state.registry.manifest_exists(&name, &reference).await?;
@@ -154,6 +290,10 @@ async fn handle_get_or_head_request(
             }
         }
         RegistryRequest::Blob { name, digest } => {
+            // Validate repository name at API boundary before logging or processing
+            // Digest validation is handled by the core layer
+            validate_repository_name(&name)?;
+
             if method == axum::http::Method::HEAD {
                 debug!("HEAD blob: {}", digest);
                 let size = state.registry.blob_exists(&name, &digest).await?;
@@ -176,13 +316,22 @@ async fn handle_get_or_head_request(
                 }
             } else {
                 debug!("GET blob: {}", digest);
-                let data = state.registry.get_blob(&name, &digest).await?;
-                let mut response = (StatusCode::OK, data).into_response();
+                let (stream, size) = state.registry.get_blob(&name, &digest).await?;
+
+                // Stream the blob data to the client (bounded memory usage)
+                let body = axum::body::Body::from_stream(stream);
+                let mut response = (StatusCode::OK, body).into_response();
                 let headers = response.headers_mut();
                 headers.insert(
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("application/octet-stream"),
                 );
+                // Only set Content-Length when we have a known size.
+                // When upstream omits Content-Length (size=0), omitting it here
+                // lets axum use chunked transfer encoding automatically.
+                if size > 0 {
+                    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+                }
                 headers.insert(
                     "Docker-Content-Digest",
                     HeaderValue::from_str(&digest).unwrap(),
@@ -191,6 +340,10 @@ async fn handle_get_or_head_request(
             }
         }
         RegistryRequest::Upload { name, session_id } => {
+            // Validate repository name at API boundary
+            // Session ID validation is handled by the core layer
+            validate_repository_name(&name)?;
+
             debug!("GET upload status: {}", session_id);
             let session = state
                 .registry
@@ -225,6 +378,10 @@ async fn handle_put_request(
 
     match req {
         RegistryRequest::Manifest { name, reference } => {
+            // Validate inputs at API boundary before logging or processing
+            validate_repository_name(&name)?;
+            validate_reference(&reference)?;
+
             debug!("PUT manifest: {}:{}", name, reference);
             let content_type = headers
                 .get(header::CONTENT_TYPE)
@@ -245,6 +402,10 @@ async fn handle_put_request(
             Ok(response)
         }
         RegistryRequest::Upload { name, session_id } => {
+            // Validate repository name at API boundary
+            // Digest and session ID validation is handled by the core layer
+            validate_repository_name(&name)?;
+
             let digest = query
                 .digest
                 .ok_or_else(|| ApiError::BadRequest("Missing digest parameter".to_string()))?;
@@ -280,8 +441,18 @@ async fn handle_post_request(
 
     match req {
         RegistryRequest::StartUpload { name } => {
+            // Validate repository name at API boundary before logging or processing
+            validate_repository_name(&name)?;
+
             // Check if this is a mount request
             if let (Some(mount_digest), Some(from)) = (query.mount, query.from) {
+                // Validate mount_digest (must be a valid digest format) at API boundary
+                // before logging or using it in any context
+                harbor_storage::backend::validate_digest(&mount_digest)
+                    .map_err(|e| ApiError::BadRequest(format!("Invalid mount digest: {}", e)))?;
+                // Validate source repository name
+                validate_repository_name(&from)?;
+
                 debug!("Mount request: {} from {}", mount_digest, from);
                 if state
                     .registry
@@ -327,6 +498,10 @@ async fn handle_patch_request(
 
     match req {
         RegistryRequest::Upload { name, session_id } => {
+            // Validate repository name at API boundary
+            // Session ID validation is handled by the core layer
+            validate_repository_name(&name)?;
+
             debug!("PATCH upload: {} ({} bytes)", session_id, body.len());
             let new_size = state.registry.append_upload(&session_id, body).await?;
             let location = format!("/v2/{}/blobs/uploads/{}", name, session_id);

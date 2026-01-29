@@ -1,11 +1,16 @@
 //! Harbor upstream client
 
 use bytes::Bytes;
+use futures::Stream;
 use reqwest::{Client, Response, StatusCode};
 use serde::Deserialize;
+use std::pin::Pin;
 use tracing::{debug, info};
 
 use crate::error::ProxyError;
+
+/// Type alias for a boxed stream of bytes
+pub type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, ProxyError>> + Send>>;
 
 /// Harbor client configuration
 #[derive(Clone, Debug)]
@@ -40,7 +45,9 @@ pub struct HarborClient {
 impl HarborClient {
     /// Create a new Harbor client
     pub fn new(config: HarborClientConfig) -> Result<Self, ProxyError> {
-        let mut builder = Client::builder();
+        let mut builder = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(60));
 
         if config.skip_tls_verify {
             builder = builder.danger_accept_invalid_certs(true);
@@ -225,6 +232,58 @@ impl HarborClient {
         Ok(response)
     }
 
+    /// Make an authenticated request with streaming body, handling 401 by getting a properly scoped token
+    async fn authenticated_request_stream(
+        &self,
+        method: &str,
+        url: &str,
+        headers: Vec<(&str, &str)>,
+        body: Option<reqwest::Body>,
+    ) -> Result<Response, ProxyError> {
+        // For streaming requests, we need to handle authentication differently
+        // We'll do a HEAD request first to get the token if needed
+        let head_url = url.split('?').next().unwrap_or(url);
+        let probe_response = self
+            .authenticated_request("HEAD", head_url, vec![], None)
+            .await?;
+
+        // Extract token from successful probe or try to get it from 401
+        let token = if probe_response.status() == StatusCode::UNAUTHORIZED {
+            let www_auth = probe_response
+                .headers()
+                .get("www-authenticate")
+                .and_then(|h| h.to_str().ok())
+                .ok_or(ProxyError::Unauthorized)?;
+
+            Some(self.fetch_token_for_scope(www_auth).await?)
+        } else {
+            None
+        };
+
+        // Build the actual streaming request
+        let mut request = match method {
+            "GET" => self.client.get(url),
+            "HEAD" => self.client.head(url),
+            "PUT" => self.client.put(url),
+            "POST" => self.client.post(url),
+            _ => self.client.get(url),
+        };
+
+        if let Some(token) = token {
+            request = request.header("Authorization", &token);
+        }
+
+        for (key, value) in &headers {
+            request = request.header(*key, *value);
+        }
+
+        if let Some(data) = body {
+            request = request.body(data);
+        }
+
+        Ok(request.send().await?)
+    }
+
     /// Check if upstream is reachable
     pub async fn ping(&self) -> Result<bool, ProxyError> {
         let url = format!("{}/v2/", self.config.url);
@@ -309,6 +368,7 @@ impl HarborClient {
     }
 
     /// Get a blob from upstream
+    #[deprecated(note = "Use get_blob_stream() to avoid buffering entire blob in memory")]
     pub async fn get_blob(
         &self,
         repository: &str,
@@ -347,6 +407,57 @@ impl HarborClient {
         Ok((body, size))
     }
 
+    /// Get a blob from upstream as a stream (avoids buffering entire blob in memory)
+    pub async fn get_blob_stream(
+        &self,
+        repository: &str,
+        digest: &str,
+    ) -> Result<(ByteStream, u64), ProxyError> {
+        let full_repo = self.full_repository(repository);
+        let url = format!("{}/v2/{}/blobs/{}", self.config.url, full_repo, digest);
+
+        debug!("Fetching blob stream: {}", url);
+
+        let response = self
+            .authenticated_request("GET", &url, vec![], None)
+            .await?;
+        let status = response.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Err(ProxyError::NotFound(digest.to_string()));
+        }
+
+        if !status.is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            // Log full upstream error server-side for debugging
+            tracing::error!(
+                "Upstream error for blob stream (status {}): {}",
+                status.as_u16(),
+                error_body
+            );
+            // Return generic message to client to avoid leaking upstream internals
+            return Err(ProxyError::UpstreamError {
+                status: status.as_u16(),
+                message: format!("Upstream returned HTTP {}", status.as_u16()),
+            });
+        }
+
+        let size = response
+            .headers()
+            .get("content-length")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        // Convert reqwest's BytesStream to our ByteStream type
+        use futures::StreamExt;
+        let stream = response.bytes_stream();
+        let byte_stream: ByteStream =
+            Box::pin(stream.map(|result| result.map_err(ProxyError::Http)));
+
+        Ok((byte_stream, size))
+    }
+
     /// Check if a blob exists
     pub async fn blob_exists(&self, repository: &str, digest: &str) -> Result<bool, ProxyError> {
         let full_repo = self.full_repository(repository);
@@ -359,6 +470,50 @@ impl HarborClient {
             .await?;
 
         Ok(response.status().is_success())
+    }
+
+    /// Get blob size and content type from upstream (HEAD request only, no download)
+    pub async fn get_blob_size(
+        &self,
+        repository: &str,
+        digest: &str,
+    ) -> Result<(u64, String), ProxyError> {
+        let full_repo = self.full_repository(repository);
+        let url = format!("{}/v2/{}/blobs/{}", self.config.url, full_repo, digest);
+
+        debug!("Getting blob size: {}", url);
+
+        let response = self
+            .authenticated_request("HEAD", &url, vec![], None)
+            .await?;
+        let status = response.status();
+
+        if status == StatusCode::NOT_FOUND {
+            return Err(ProxyError::NotFound(digest.to_string()));
+        }
+
+        if !status.is_success() {
+            return Err(ProxyError::UpstreamError {
+                status: status.as_u16(),
+                message: "HEAD request failed".to_string(),
+            });
+        }
+
+        let size = response
+            .headers()
+            .get("content-length")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+
+        Ok((size, content_type))
     }
 
     /// Push a blob to upstream
@@ -420,6 +575,84 @@ impl HarborClient {
 
         let response = self
             .authenticated_request("PUT", &upload_url, headers, Some(data))
+            .await?;
+
+        if !response.status().is_success() && response.status() != StatusCode::CREATED {
+            return Err(ProxyError::UpstreamError {
+                status: response.status().as_u16(),
+                message: response.text().await.unwrap_or_default(),
+            });
+        }
+
+        debug!("Blob {} uploaded successfully", digest);
+        Ok(())
+    }
+
+    /// Push a blob to upstream as a stream (avoids buffering entire blob in memory)
+    pub async fn push_blob_stream(
+        &self,
+        repository: &str,
+        digest: &str,
+        stream: ByteStream,
+        size: u64,
+    ) -> Result<(), ProxyError> {
+        // First check if blob already exists upstream
+        if self.blob_exists(repository, digest).await? {
+            debug!("Blob {} already exists upstream, skipping upload", digest);
+            return Ok(());
+        }
+
+        // Start upload
+        let full_repo = self.full_repository(repository);
+        let url = format!("{}/v2/{}/blobs/uploads/", self.config.url, full_repo);
+
+        debug!("Starting blob upload to: {}", url);
+
+        let response = self
+            .authenticated_request("POST", &url, vec![], None)
+            .await?;
+
+        if !response.status().is_success() && response.status() != StatusCode::ACCEPTED {
+            return Err(ProxyError::UpstreamError {
+                status: response.status().as_u16(),
+                message: response.text().await.unwrap_or_default(),
+            });
+        }
+
+        // Get upload location
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|h| h.to_str().ok())
+            .ok_or_else(|| ProxyError::InvalidResponse("Missing Location header".to_string()))?;
+
+        // Complete upload with monolithic PUT (send all data in one request)
+        // Location header may already contain query params (like ?_state=...)
+        let separator = if location.contains('?') { '&' } else { '?' };
+        let upload_url = if location.starts_with("http") {
+            format!("{}{}digest={}", location, separator, digest)
+        } else {
+            format!(
+                "{}{}{}digest={}",
+                self.config.url, location, separator, digest
+            )
+        };
+
+        debug!("Completing blob upload: {} ({} bytes)", upload_url, size);
+
+        let size_str = size.to_string();
+        let headers = vec![
+            ("Content-Type", "application/octet-stream"),
+            ("Content-Length", size_str.as_str()),
+        ];
+
+        // Convert ByteStream to reqwest::Body
+        use futures::TryStreamExt;
+        let reqwest_stream = stream.map_err(|e| std::io::Error::other(e.to_string()));
+        let body = reqwest::Body::wrap_stream(reqwest_stream);
+
+        let response = self
+            .authenticated_request_stream("PUT", &upload_url, headers, Some(body))
             .await?;
 
         if !response.status().is_success() && response.status() != StatusCode::CREATED {

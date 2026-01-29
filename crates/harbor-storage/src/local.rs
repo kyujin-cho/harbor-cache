@@ -277,8 +277,8 @@ impl StorageBackend for LocalStorage {
             upload_path, blob_path
         );
 
-        // Read and verify digest
-        let data = fs::read(&upload_path).await.map_err(|e| {
+        // Stream read and verify digest without loading entire file into memory
+        let file = File::open(&upload_path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 StorageError::NotFound(format!("Upload session: {}", session_id))
             } else {
@@ -286,7 +286,19 @@ impl StorageBackend for LocalStorage {
             }
         })?;
 
-        let computed = compute_sha256(&data);
+        let mut reader = BufReader::with_capacity(1024 * 1024, file); // 1MB buffer
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0u8; 1024 * 1024]; // 1MB chunks
+
+        loop {
+            let bytes_read = reader.read(&mut buffer).await?;
+            if bytes_read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..bytes_read]);
+        }
+
+        let computed = format!("sha256:{}", hex::encode(hasher.finalize()));
         if computed != digest {
             // Clean up
             let _ = fs::remove_file(&upload_path).await;

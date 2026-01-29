@@ -5,11 +5,73 @@ use harbor_db::{Database, EntryType, NewUploadSession, UploadSession};
 use harbor_proxy::HarborClient;
 use harbor_storage::StorageBackend;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::cache::CacheManager;
 use crate::error::CoreError;
+
+// ==================== Input Validation ====================
+
+/// Validate OCI tag reference format at service boundary.
+/// Tags must match the pattern: `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}`
+///
+/// This allows: alphanumeric, underscores, dots, and dashes.
+/// Must start with alphanumeric or underscore.
+/// Maximum length is 128 characters.
+fn validate_tag_reference(tag: &str) -> Result<(), CoreError> {
+    // Check length limits
+    if tag.is_empty() {
+        return Err(CoreError::BadRequest(
+            "Tag reference cannot be empty".to_string(),
+        ));
+    }
+    if tag.len() > 128 {
+        return Err(CoreError::BadRequest(
+            "Tag reference exceeds maximum length of 128 characters".to_string(),
+        ));
+    }
+
+    // Check for path traversal sequences
+    if tag.contains("..") || tag.contains('/') {
+        return Err(CoreError::BadRequest(
+            "Tag reference contains invalid characters".to_string(),
+        ));
+    }
+
+    // First character must be alphanumeric or underscore
+    let first_char = tag.chars().next().unwrap();
+    if !first_char.is_ascii_alphanumeric() && first_char != '_' {
+        return Err(CoreError::BadRequest(
+            "Tag reference must start with alphanumeric character or underscore".to_string(),
+        ));
+    }
+
+    // Remaining characters must be alphanumeric, underscore, dot, or dash
+    for ch in tag.chars() {
+        if !ch.is_ascii_alphanumeric() && ch != '_' && ch != '.' && ch != '-' {
+            return Err(CoreError::BadRequest(format!(
+                "Tag reference contains invalid character: '{}'",
+                ch
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate a manifest reference (either a tag or a digest).
+/// Digests are validated separately; this validates tags.
+fn validate_reference(reference: &str) -> Result<(), CoreError> {
+    // If it's a digest, validate as digest
+    if reference.starts_with("sha256:") || reference.starts_with("sha512:") {
+        harbor_storage::backend::validate_digest(reference)?;
+        return Ok(());
+    }
+
+    // Otherwise validate as a tag
+    validate_tag_reference(reference)
+}
 
 /// Registry service handling OCI Distribution API operations
 pub struct RegistryService {
@@ -43,6 +105,10 @@ impl RegistryService {
         repository: &str,
         reference: &str,
     ) -> Result<(Bytes, String, String), CoreError> {
+        // Validate reference format at service boundary to prevent path traversal
+        // and ensure tag/digest format compliance
+        validate_reference(reference)?;
+
         // First, check if reference is a digest
         let _cache_key = if reference.starts_with("sha256:") {
             reference.to_string()
@@ -108,6 +174,10 @@ impl RegistryService {
         repository: &str,
         reference: &str,
     ) -> Result<Option<(String, String, i64)>, CoreError> {
+        // Validate reference format at service boundary to prevent path traversal
+        // and ensure tag/digest format compliance
+        validate_reference(reference)?;
+
         // Check cache first if reference is a digest
         if reference.starts_with("sha256:")
             && let Some(entry) = self.cache.get_metadata(reference).await?
@@ -135,6 +205,10 @@ impl RegistryService {
         content_type: &str,
         data: Bytes,
     ) -> Result<String, CoreError> {
+        // Validate reference format at service boundary to prevent path traversal
+        // and ensure tag/digest format compliance
+        validate_reference(reference)?;
+
         debug!("Pushing manifest: {}:{}", repository, reference);
 
         // Compute digest
@@ -174,9 +248,94 @@ impl RegistryService {
 
     // ==================== Blob Operations ====================
 
-    /// Get a blob (cache-aside pattern)
-    pub async fn get_blob(&self, repository: &str, digest: &str) -> Result<Bytes, CoreError> {
-        debug!("Getting blob: {}", digest);
+    /// Get a blob as a stream (cache-aside pattern with tee for simultaneous caching and serving)
+    pub async fn get_blob(
+        &self,
+        repository: &str,
+        digest: &str,
+    ) -> Result<(harbor_storage::backend::ByteStream, u64), CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        harbor_storage::backend::validate_digest(digest)?;
+        debug!("Getting blob stream: {}", digest);
+
+        // Check cache first
+        if let Some((stream, entry)) = self.cache.get_stream(digest).await? {
+            info!("Cache hit for blob: {}", digest);
+            return Ok((stream, entry.size as u64));
+        }
+
+        // Cache miss - fetch from upstream with streaming
+        info!("Cache miss for blob: {}, fetching from upstream", digest);
+
+        let (stream, size) = self
+            .upstream
+            .get_blob_stream(repository, digest)
+            .await
+            .map_err(|e| {
+                if matches!(e, harbor_proxy::ProxyError::NotFound(_)) {
+                    CoreError::NotFound(digest.to_string())
+                } else {
+                    CoreError::Proxy(e)
+                }
+            })?;
+
+        // Convert ProxyError stream to StorageError stream for caching
+        use futures::StreamExt;
+        let storage_stream: harbor_storage::backend::ByteStream = Box::pin(stream.map(|result| {
+            result
+                .map_err(|e| harbor_storage::StorageError::Io(std::io::Error::other(e.to_string())))
+        }));
+
+        // Tee the stream: one copy to cache, one copy to return
+        let (client_stream, cache_handle) = self
+            .cache
+            .tee_and_cache_stream(
+                EntryType::Blob,
+                Some(repository.to_string()),
+                None,
+                digest,
+                "application/octet-stream",
+                storage_stream,
+                Some(size),
+            )
+            .await?;
+
+        // Spawn a wrapper task that awaits the cache handle and logs errors.
+        // We don't block the client response on caching completion.
+        let digest_for_log = digest.to_string();
+        tokio::spawn(async move {
+            match cache_handle.await {
+                Ok(Ok(_entry)) => {
+                    debug!("Background cache write succeeded for {}", digest_for_log);
+                }
+                Ok(Err(e)) => {
+                    warn!(
+                        "Background cache write failed for {}: {}",
+                        digest_for_log, e
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Background cache task panicked for {}: {:?}",
+                        digest_for_log, e
+                    );
+                }
+            }
+        });
+
+        Ok((client_stream, size))
+    }
+
+    /// Get a blob fully buffered (for cases that need in-memory data)
+    #[allow(dead_code)]
+    pub async fn get_blob_buffered(
+        &self,
+        repository: &str,
+        digest: &str,
+    ) -> Result<Bytes, CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        harbor_storage::backend::validate_digest(digest)?;
+        debug!("Getting blob buffered: {}", digest);
 
         // Check cache first
         if let Some((data, _entry)) = self.cache.get(digest).await? {
@@ -187,6 +346,7 @@ impl RegistryService {
         // Cache miss - fetch from upstream
         info!("Cache miss for blob: {}, fetching from upstream", digest);
 
+        #[allow(deprecated)]
         let (data, _size) = self
             .upstream
             .get_blob(repository, digest)
@@ -214,30 +374,76 @@ impl RegistryService {
         Ok(data)
     }
 
-    /// Check if a blob exists (HEAD request)
+    /// Check if a blob exists (HEAD request - no download)
     pub async fn blob_exists(
         &self,
         repository: &str,
         digest: &str,
     ) -> Result<Option<i64>, CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        harbor_storage::backend::validate_digest(digest)?;
         // Check cache first
         if let Some(entry) = self.cache.get_metadata(digest).await? {
             return Ok(Some(entry.size));
         }
 
-        // Check upstream
-        if self.upstream.blob_exists(repository, digest).await? {
-            // Fetch and cache it
-            match self.get_blob(repository, digest).await {
-                Ok(data) => Ok(Some(data.len() as i64)),
-                Err(_) => Ok(None),
+        // Check upstream with HEAD request only (no download)
+        match self.upstream.get_blob_size(repository, digest).await {
+            Ok((size, _content_type)) => {
+                // Optionally trigger background cache warm-up
+                // For now, just return the size without downloading
+                Ok(Some(size as i64))
             }
-        } else {
-            Ok(None)
+            Err(harbor_proxy::ProxyError::NotFound(_)) => Ok(None),
+            Err(e) => Err(CoreError::Proxy(e)),
         }
     }
 
     // ==================== Upload Operations ====================
+
+    /// Validate session ID format to prevent path traversal attacks.
+    /// Session IDs must be valid UUIDs (lowercase hex with dashes).
+    fn validate_session_id(session_id: &str) -> Result<(), CoreError> {
+        // UUID format: 8-4-4-4-12 lowercase hex characters with dashes
+        // e.g., "550e8400-e29b-41d4-a716-446655440000"
+        if session_id.len() != 36 {
+            return Err(CoreError::BadRequest(format!(
+                "Invalid session ID format: {}",
+                session_id
+            )));
+        }
+
+        // Check UUID format with dashes at correct positions
+        let parts: Vec<&str> = session_id.split('-').collect();
+        if parts.len() != 5 {
+            return Err(CoreError::BadRequest(format!(
+                "Invalid session ID format: {}",
+                session_id
+            )));
+        }
+
+        let expected_lens = [8, 4, 4, 4, 12];
+        for (part, &expected_len) in parts.iter().zip(expected_lens.iter()) {
+            if part.len() != expected_len {
+                return Err(CoreError::BadRequest(format!(
+                    "Invalid session ID format: {}",
+                    session_id
+                )));
+            }
+            // Must be lowercase hex only
+            if !part
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            {
+                return Err(CoreError::BadRequest(format!(
+                    "Invalid session ID format (must be lowercase hex): {}",
+                    session_id
+                )));
+            }
+        }
+
+        Ok(())
+    }
 
     /// Start a blob upload session
     pub async fn start_upload(&self, repository: &str) -> Result<String, CoreError> {
@@ -262,11 +468,15 @@ impl RegistryService {
         &self,
         session_id: &str,
     ) -> Result<Option<UploadSession>, CoreError> {
+        // Validate session ID format to prevent path traversal
+        Self::validate_session_id(session_id)?;
         Ok(self.db.get_upload_session(session_id).await?)
     }
 
     /// Append data to an upload session
     pub async fn append_upload(&self, session_id: &str, data: Bytes) -> Result<i64, CoreError> {
+        // Validate session ID format to prevent path traversal
+        Self::validate_session_id(session_id)?;
         debug!("Appending {} bytes to upload: {}", data.len(), session_id);
 
         let new_size = self.storage.append_chunk(session_id, data).await?;
@@ -277,13 +487,17 @@ impl RegistryService {
         Ok(new_size as i64)
     }
 
-    /// Complete an upload session
+    /// Complete an upload session (with streaming push to upstream)
     pub async fn complete_upload(
         &self,
         repository: &str,
         session_id: &str,
         digest: &str,
     ) -> Result<(), CoreError> {
+        // Validate session ID format to prevent path traversal
+        Self::validate_session_id(session_id)?;
+        // Validate digest format at service boundary to prevent path traversal
+        harbor_storage::backend::validate_digest(digest)?;
         debug!("Completing upload: {} -> {}", session_id, digest);
 
         // Get session info
@@ -302,12 +516,19 @@ impl RegistryService {
         // Get the size
         let size = self.storage.size(digest).await?;
 
-        // Read the data for pushing to upstream
-        let data = self.storage.read(digest).await?;
+        // Stream the data for pushing to upstream (avoid buffering in memory)
+        let storage_stream = self.storage.stream(digest).await?;
 
-        // Push to upstream
+        // Convert StorageError stream to ProxyError stream for upstream
+        use futures::StreamExt;
+        let proxy_stream: harbor_proxy::client::ByteStream =
+            Box::pin(storage_stream.map(|result| {
+                result.map_err(|e| harbor_proxy::ProxyError::InvalidResponse(e.to_string()))
+            }));
+
+        // Push to upstream with streaming
         self.upstream
-            .push_blob(repository, digest, data.clone())
+            .push_blob_stream(repository, digest, proxy_stream, size)
             .await?;
 
         // Create cache entry
@@ -332,6 +553,8 @@ impl RegistryService {
 
     /// Cancel an upload session
     pub async fn cancel_upload(&self, session_id: &str) -> Result<(), CoreError> {
+        // Validate session ID format to prevent path traversal
+        Self::validate_session_id(session_id)?;
         debug!("Canceling upload: {}", session_id);
 
         self.storage.cancel_chunked_upload(session_id).await?;
@@ -340,13 +563,15 @@ impl RegistryService {
         Ok(())
     }
 
-    /// Mount a blob from another repository (if it exists in cache)
+    /// Mount a blob from another repository (if it exists in cache) with streaming
     pub async fn mount_blob(
         &self,
         repository: &str,
         digest: &str,
         from: &str,
     ) -> Result<bool, CoreError> {
+        // Validate digest format at service boundary to prevent path traversal
+        harbor_storage::backend::validate_digest(digest)?;
         debug!(
             "Attempting to mount blob {} from {} to {}",
             digest, from, repository
@@ -360,17 +585,27 @@ impl RegistryService {
 
         // Check if it exists in upstream (from source)
         if self.upstream.blob_exists(from, digest).await? {
-            // Fetch from source and cache
-            let (data, _size) = self.upstream.get_blob(from, digest).await?;
+            // Fetch from source and cache with streaming
+            let (proxy_stream, size) = self.upstream.get_blob_stream(from, digest).await?;
+
+            // Convert ProxyError stream to StorageError stream for caching
+            use futures::StreamExt;
+            let storage_stream: harbor_storage::backend::ByteStream =
+                Box::pin(proxy_stream.map(|result| {
+                    result.map_err(|e| {
+                        harbor_storage::StorageError::Io(std::io::Error::other(e.to_string()))
+                    })
+                }));
 
             self.cache
-                .put(
+                .put_stream(
                     EntryType::Blob,
                     Some(repository.to_string()),
                     None,
                     digest,
                     "application/octet-stream",
-                    data,
+                    storage_stream,
+                    Some(size),
                 )
                 .await?;
 

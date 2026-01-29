@@ -1,0 +1,15 @@
+# Cargo audit configuration
+# See: https://rustsec.org/
+
+[advisories]
+# Ignore list for known vulnerabilities that cannot be fixed
+ignore = [
+    # RUSTSEC-2023-0071: rsa crate timing side-channel (Marvin Attack)
+    # This is a transitive dependency from sqlx-postgres.
+    # The project uses SQLite, not PostgreSQL, so this doesn't affect us.
+    # No patch is available as of 2026-01.
+    "RUSTSEC-2023-0071",
+]
+
+# Only treat actual vulnerabilities as errors, not informational warnings
+informational_warnings = []
