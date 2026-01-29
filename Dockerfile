@@ -15,7 +15,8 @@ COPY frontend ./
 RUN npm run build
 
 # Backend build stage
-FROM rust:1-slim AS builder
+# Use bookworm to match runtime stage GLIBC version
+FROM rust:1-bookworm AS builder
 
 WORKDIR /build
 
