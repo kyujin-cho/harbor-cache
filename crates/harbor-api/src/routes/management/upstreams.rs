@@ -680,97 +680,59 @@ async fn delete_upstream_route(
 // ==================== Health & Testing ====================
 
 /// GET /api/v1/upstreams/:name/health (Admin only)
+///
+/// Uses the cached HarborClient from UpstreamManager for connection pooling efficiency.
 async fn get_upstream_health(
     _admin: RequireAdmin,
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> Result<Json<UpstreamHealthResponse>, ApiError> {
-    let upstream = state
-        .config_provider
-        .get_upstream_by_name(&name)
-        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", name)))?;
-
-    // Test connection
-    let config = HarborClientConfig {
-        url: upstream.url.clone(),
-        registry: upstream.registry.clone(),
-        username: upstream.username.clone(),
-        password: upstream.password.clone(),
-        skip_tls_verify: upstream.skip_tls_verify,
-    };
-
-    let (healthy, error) = match HarborClient::new(config) {
-        Ok(client) => match client.ping().await {
-            Ok(true) => (true, None),
-            Ok(false) => (false, Some("Ping returned false".to_string())),
-            Err(e) => (false, Some(e.to_string())),
-        },
-        Err(e) => (false, Some(e.to_string())),
-    };
+    // Use UpstreamManager's cached client for better connection pooling
+    let health = state
+        .upstream_manager
+        .check_upstream_health(&name)
+        .await
+        .map_err(|e| {
+            if e.to_string().contains("not found") || e.to_string().contains("NotFound") {
+                ApiError::NotFound(format!("Upstream: {}", name))
+            } else {
+                ApiError::Internal(e.to_string())
+            }
+        })?;
 
     Ok(Json(UpstreamHealthResponse {
         upstream_id: 0, // Not used with config-based storage
-        name: upstream.name,
-        healthy,
-        last_check: chrono::Utc::now().to_rfc3339(),
-        last_error: error,
-        consecutive_failures: if healthy { 0 } else { 1 },
+        name: health.name,
+        healthy: health.healthy,
+        last_check: health.last_check.to_rfc3339(),
+        last_error: health.last_error,
+        consecutive_failures: health.consecutive_failures,
     }))
 }
 
 /// GET /api/v1/upstreams/health (Admin only) - Get health for all upstreams
+///
+/// Uses UpstreamManager's cached clients for better connection pooling efficiency.
 async fn get_all_upstreams_health(
     _admin: RequireAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<UpstreamHealthResponse>>, ApiError> {
-    let upstreams = state.config_provider.get_upstreams();
+    // Use UpstreamManager's check_all_health which uses cached clients
+    let health_results = state.upstream_manager.check_all_health().await;
 
-    // Run health checks concurrently for better performance
-    let health_futures: Vec<_> = upstreams
+    let responses: Vec<UpstreamHealthResponse> = health_results
         .into_iter()
-        .map(|upstream| {
-            let config = HarborClientConfig {
-                url: upstream.url.clone(),
-                registry: upstream.registry.clone(),
-                username: upstream.username.clone(),
-                password: upstream.password.clone(),
-                skip_tls_verify: upstream.skip_tls_verify,
-            };
-
-            async move {
-                let (healthy, error) = match HarborClient::new(config) {
-                    Ok(client) => {
-                        // Add timeout for individual health check (10 seconds)
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(10),
-                            client.ping(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(true)) => (true, None),
-                            Ok(Ok(false)) => (false, Some("Ping returned false".to_string())),
-                            Ok(Err(e)) => (false, Some(e.to_string())),
-                            Err(_) => (false, Some("Health check timed out".to_string())),
-                        }
-                    }
-                    Err(e) => (false, Some(e.to_string())),
-                };
-
-                UpstreamHealthResponse {
-                    upstream_id: 0,
-                    name: upstream.name,
-                    healthy,
-                    last_check: chrono::Utc::now().to_rfc3339(),
-                    last_error: error,
-                    consecutive_failures: if healthy { 0 } else { 1 },
-                }
-            }
+        .map(|health| UpstreamHealthResponse {
+            upstream_id: 0,
+            name: health.name,
+            healthy: health.healthy,
+            last_check: health.last_check.to_rfc3339(),
+            last_error: health.last_error,
+            consecutive_failures: health.consecutive_failures,
         })
         .collect();
 
-    let results = futures::future::join_all(health_futures).await;
-
-    Ok(Json(results))
+    Ok(Json(responses))
 }
 
 /// POST /api/v1/upstreams/test (Admin only) - Test connection without saving
