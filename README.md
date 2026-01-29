@@ -8,6 +8,7 @@ Harbor Cache acts as an intermediary between Docker clients and an upstream Harb
 
 - **OCI Distribution Spec Compliant**: Full support for pulling and pushing container images
 - **Multi-Architecture Support**: Handles manifest lists and OCI image indexes
+- **Multiple Upstreams**: Configure multiple upstream Harbor registries with route-based selection
 - **Multiple Storage Backends**: Local disk or S3-compatible storage (AWS S3, MinIO)
 - **Cache Management**: Configurable eviction policies (LRU, LFU, FIFO)
 - **Web UI**: Dashboard for monitoring and management
@@ -78,12 +79,34 @@ max_size = 10737418240  # 10 GB
 retention_days = 30
 eviction_policy = "lru"  # lru, lfu, or fifo
 
-[upstream]
+# Multiple upstreams configuration
+# (Legacy [upstream] format is also supported for backwards compatibility)
+[[upstreams]]
+name = "default"
+display_name = "Default Harbor"
 url = "https://harbor.example.com"
 registry = "library"
 username = "admin"
 password = "secret"
 skip_tls_verify = false
+priority = 100
+enabled = true
+cache_isolation = "shared"  # or "isolated"
+is_default = true
+
+# Optional: Add route patterns for this upstream
+# [[upstreams.routes]]
+# pattern = "library/*"
+# priority = 100
+
+# Additional upstream example
+# [[upstreams]]
+# name = "team-a"
+# display_name = "Team A Registry"
+# url = "https://harbor2.example.com"
+# registry = "team-a"
+# priority = 50
+# is_default = false
 
 [storage]
 backend = "local"  # local or s3

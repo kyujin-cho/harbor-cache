@@ -944,6 +944,7 @@ dependencies = [
  "hyper-util",
  "metrics",
  "metrics-exporter-prometheus",
+ "parking_lot",
  "rustls",
  "rustls-pemfile",
  "serde",
@@ -960,6 +961,7 @@ dependencies = [
 name = "harbor-core"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
  "bytes",
  "chrono",
  "futures",

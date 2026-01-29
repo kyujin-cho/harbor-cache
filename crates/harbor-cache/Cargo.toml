@@ -34,3 +34,4 @@ rustls-pemfile.workspace = true
 tokio-rustls.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
+parking_lot.workspace = true

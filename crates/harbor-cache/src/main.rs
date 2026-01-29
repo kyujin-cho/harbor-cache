@@ -16,10 +16,11 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 mod config;
 
-use config::Config;
+use config::{Config, ConfigManager, UpstreamConfig};
 use harbor_api::{AppState, MetricsHandle, create_router};
 use harbor_auth::JwtManager;
-use harbor_core::{CacheConfig, CacheManager, RegistryService, spawn_cleanup_task};
+use harbor_core::{CacheConfig, CacheManager, RegistryService, UpstreamManager, spawn_cleanup_task};
+use harbor_core::config::UpstreamConfigProvider;
 use harbor_db::Database;
 use harbor_proxy::{HarborClient, HarborClientConfig};
 use harbor_storage::{LocalStorage, S3Config, S3Storage, StorageBackend};
@@ -39,6 +40,112 @@ struct Args {
     /// Port
     #[arg(short, long, env = "HARBOR_CACHE_PORT")]
     port: Option<u16>,
+}
+
+/// Adapter to make ConfigManager implement UpstreamConfigProvider
+struct ConfigManagerAdapter {
+    manager: ConfigManager,
+}
+
+impl ConfigManagerAdapter {
+    fn new(manager: ConfigManager) -> Self {
+        Self { manager }
+    }
+}
+
+impl UpstreamConfigProvider for ConfigManagerAdapter {
+    fn get_upstreams(&self) -> Vec<harbor_core::UpstreamConfig> {
+        self.manager
+            .get_upstreams()
+            .into_iter()
+            .map(|u| config_to_core_upstream(&u))
+            .collect()
+    }
+
+    fn get_upstream_by_name(&self, name: &str) -> Option<harbor_core::UpstreamConfig> {
+        self.manager
+            .get_upstream_by_name(name)
+            .map(|u| config_to_core_upstream(&u))
+    }
+
+    fn get_default_upstream(&self) -> Option<harbor_core::UpstreamConfig> {
+        self.manager
+            .get_default_upstream()
+            .map(|u| config_to_core_upstream(&u))
+    }
+
+    fn add_upstream(&self, upstream: harbor_core::UpstreamConfig) -> anyhow::Result<()> {
+        let config_upstream = core_to_config_upstream(&upstream);
+        self.manager.add_upstream(config_upstream)
+    }
+
+    fn update_upstream(
+        &self,
+        name: &str,
+        updated: harbor_core::UpstreamConfig,
+    ) -> anyhow::Result<()> {
+        let config_upstream = core_to_config_upstream(&updated);
+        self.manager.update_upstream(name, config_upstream)
+    }
+
+    fn remove_upstream(&self, name: &str) -> anyhow::Result<harbor_core::UpstreamConfig> {
+        let removed = self.manager.remove_upstream(name)?;
+        Ok(config_to_core_upstream(&removed))
+    }
+
+    fn get_config_path(&self) -> String {
+        self.manager.get_path()
+    }
+}
+
+/// Convert config::UpstreamConfig to harbor_core::UpstreamConfig
+fn config_to_core_upstream(config: &UpstreamConfig) -> harbor_core::UpstreamConfig {
+    harbor_core::UpstreamConfig {
+        name: config.name.clone(),
+        display_name: config.display_name.clone(),
+        url: config.url.clone(),
+        registry: config.registry.clone(),
+        username: config.username.clone(),
+        password: config.password.clone(),
+        skip_tls_verify: config.skip_tls_verify,
+        priority: config.priority,
+        enabled: config.enabled,
+        cache_isolation: config.cache_isolation.clone(),
+        is_default: config.is_default,
+        routes: config
+            .routes
+            .iter()
+            .map(|r| harbor_core::UpstreamRouteConfig {
+                pattern: r.pattern.clone(),
+                priority: r.priority,
+            })
+            .collect(),
+    }
+}
+
+/// Convert harbor_core::UpstreamConfig to config::UpstreamConfig
+fn core_to_config_upstream(core: &harbor_core::UpstreamConfig) -> UpstreamConfig {
+    UpstreamConfig {
+        name: core.name.clone(),
+        display_name: core.display_name.clone(),
+        url: core.url.clone(),
+        registry: core.registry.clone(),
+        username: core.username.clone(),
+        password: core.password.clone(),
+        skip_tls_verify: core.skip_tls_verify,
+        priority: core.priority,
+        enabled: core.enabled,
+        cache_isolation: core.cache_isolation.clone(),
+        is_default: core.is_default,
+        routes: core
+            .routes
+            .iter()
+            .map(|r| config::UpstreamRouteConfig {
+                pattern: r.pattern.clone(),
+                priority: r.priority,
+            })
+            .collect(),
+    }
 }
 
 #[tokio::main]
@@ -111,14 +218,35 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Initialize upstream client
+    // Create config manager for runtime updates
+    let config_manager = ConfigManager::new(config.clone(), args.config.clone());
+    let config_provider: Arc<dyn UpstreamConfigProvider> =
+        Arc::new(ConfigManagerAdapter::new(config_manager.clone()));
+
+    // Initialize upstream manager with config provider
+    let upstream_manager = Arc::new(
+        UpstreamManager::new(config_provider.clone())
+            .context("Failed to initialize upstream manager")?,
+    );
+
+    // Get the default upstream for the legacy RegistryService
+    // For compatibility, we still need a single HarborClient for RegistryService
+    let default_upstream = config
+        .get_default_upstream()
+        .ok_or_else(|| anyhow::anyhow!("No default upstream configured"))?;
+
     let upstream = Arc::new(HarborClient::new(HarborClientConfig {
-        url: config.upstream.url.clone(),
-        registry: config.upstream.registry.clone(),
-        username: config.upstream.username.clone(),
-        password: config.upstream.password.clone(),
-        skip_tls_verify: config.upstream.skip_tls_verify,
+        url: default_upstream.url.clone(),
+        registry: default_upstream.registry.clone(),
+        username: default_upstream.username.clone(),
+        password: default_upstream.password.clone(),
+        skip_tls_verify: default_upstream.skip_tls_verify,
     })?);
+
+    info!(
+        "Default upstream: {} -> {}",
+        default_upstream.name, default_upstream.url
+    );
 
     // Initialize cache manager
     let cache_config = CacheConfig {
@@ -143,8 +271,16 @@ async fn main() -> Result<()> {
     let jwt = Arc::new(JwtManager::new(&config.auth.jwt_secret, 24));
 
     // Create application state
-    let state = AppState::new(db, cache, registry, storage, jwt, config.auth.enabled)
-        .with_config_path(args.config.clone());
+    let state = AppState::new(
+        db,
+        cache,
+        registry,
+        storage,
+        jwt,
+        config.auth.enabled,
+        upstream_manager,
+        config_provider,
+    );
 
     // Initialize Prometheus metrics
     let metrics_handle = init_metrics();
@@ -153,11 +289,25 @@ async fn main() -> Result<()> {
     let app = create_router(state, metrics_handle.map(Arc::new)).layer(TraceLayer::new_for_http());
 
     // Determine bind address
-    let bind_addr = args.bind.unwrap_or(config.server.bind_address);
+    let bind_addr = args.bind.unwrap_or(config.server.bind_address.clone());
     let port = args.port.unwrap_or(config.server.port);
     let addr: SocketAddr = format!("{}:{}", bind_addr, port).parse()?;
 
-    info!("Upstream: {}", config.upstream.url);
+    // Log all configured upstreams
+    info!("Configured upstreams:");
+    for upstream in config.get_upstreams() {
+        info!(
+            "  - {} ({}): {} [{}]",
+            upstream.name,
+            upstream.display_name(),
+            upstream.url,
+            if upstream.is_default {
+                "default"
+            } else {
+                "active"
+            }
+        );
+    }
 
     // Start server with or without TLS
     if config.tls.enabled {

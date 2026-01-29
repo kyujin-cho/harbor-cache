@@ -12,16 +12,62 @@ retention_days = 30
 # Eviction policy: "lru", "lfu", or "fifo"
 eviction_policy = "lru"
 
-[upstream]
-# URL of the upstream Harbor registry
+# ============================================================================
+# UPSTREAM CONFIGURATION
+# ============================================================================
+# You can configure upstreams in two ways:
+#
+# 1. Legacy single [upstream] format (for backwards compatibility):
+#    [upstream]
+#    url = "http://localhost:8880"
+#    registry = "library"
+#    username = "admin"
+#    password = "Harbor12345"
+#
+# 2. New multi-upstream [[upstreams]] format (recommended):
+#    Supports multiple upstreams with route-based selection.
+#
+# If both are present, [[upstreams]] takes precedence.
+# Legacy [upstream] is automatically migrated to [[upstreams]] at startup.
+# ============================================================================
+
+# Default upstream configuration
+[[upstreams]]
+name = "default"
+display_name = "Default Upstream"
 url = "http://localhost:8880"
-# Registry/project name to proxy
 registry = "library"
-# Skip TLS certificate verification (for self-signed certs)
-skip_tls_verify = true
-# Credentials for upstream authentication
 username = "admin"
 password = "Harbor12345"
+skip_tls_verify = true
+priority = 100
+enabled = true
+cache_isolation = "shared"  # "shared" or "isolated"
+is_default = true
+
+# Optional: Add route patterns for this upstream
+# Routes allow you to direct requests to specific upstreams based on repository path
+# [[upstreams.routes]]
+# pattern = "library/*"
+# priority = 100
+
+# Example: Add another upstream for team-specific images
+# [[upstreams]]
+# name = "team-a"
+# display_name = "Team A Registry"
+# url = "https://harbor2.example.com"
+# registry = "team-a"
+# username = "team-a-user"
+# password = "team-a-secret"
+# skip_tls_verify = false
+# priority = 50
+# enabled = true
+# cache_isolation = "isolated"
+# is_default = false
+#
+# [[upstreams.routes]]
+# pattern = "team-a/*"
+# priority = 50
 
 [storage]
 # Storage backend: "local" or "s3"

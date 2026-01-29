@@ -283,19 +283,30 @@ export interface TestUpstreamResponse {
 
 export const upstreamsApi = {
   list: () => api.get<Upstream[]>('/upstreams'),
-  get: (id: number) => api.get<Upstream>(`/upstreams/${id}`),
+  // Get upstream by name
+  get: (name: string) => api.get<Upstream>(`/upstreams/${encodeURIComponent(name)}`),
   create: (data: CreateUpstreamRequest) => api.post<Upstream>('/upstreams', data),
-  update: (id: number, data: UpdateUpstreamRequest) => api.put<Upstream>(`/upstreams/${id}`, data),
-  delete: (id: number) => api.delete(`/upstreams/${id}`),
-  getHealth: (id: number) => api.get<UpstreamHealth>(`/upstreams/${id}/health`),
+  // Update upstream by name (or id for backward compatibility)
+  update: (nameOrId: string | number, data: UpdateUpstreamRequest) =>
+    api.put<Upstream>(`/upstreams/${encodeURIComponent(String(nameOrId))}`, data),
+  // Delete upstream by name (or id for backward compatibility)
+  delete: (nameOrId: string | number) =>
+    api.delete(`/upstreams/${encodeURIComponent(String(nameOrId))}`),
+  // Health endpoints use name
+  getHealth: (name: string) => api.get<UpstreamHealth>(`/upstreams/${encodeURIComponent(name)}/health`),
   getAllHealth: () => api.get<UpstreamHealth[]>('/upstreams/health'),
-  getStats: (id: number) => api.get<CacheStats>(`/upstreams/${id}/stats`),
-  getRoutes: (id: number) => api.get<UpstreamRoute[]>(`/upstreams/${id}/routes`),
-  addRoute: (id: number, data: { pattern: string; priority?: number }) =>
-    api.post<UpstreamRoute>(`/upstreams/${id}/routes`, data),
-  deleteRoute: (upstreamId: number, routeId: number) =>
-    api.delete(`/upstreams/${upstreamId}/routes/${routeId}`),
-  test: (data: TestUpstreamRequest) => api.post<TestUpstreamResponse>('/upstreams/test', data)
+  getStats: (name: string) => api.get<CacheStats>(`/upstreams/${encodeURIComponent(name)}/stats`),
+  // Routes use name
+  getRoutes: (name: string) => api.get<UpstreamRoute[]>(`/upstreams/${encodeURIComponent(name)}/routes`),
+  addRoute: (name: string, data: { pattern: string; priority?: number }) =>
+    api.post<UpstreamRoute>(`/upstreams/${encodeURIComponent(name)}/routes`, data),
+  deleteRoute: (upstreamName: string, routeIdx: number) =>
+    api.delete(`/upstreams/${encodeURIComponent(upstreamName)}/routes/${routeIdx}`),
+  test: (data: TestUpstreamRequest) => api.post<TestUpstreamResponse>('/upstreams/test', data),
+  // Reload configuration from file
+  reload: () => api.post<{ success: boolean; message: string }>('/upstreams/reload'),
+  // Get config file path
+  getConfigPath: () => api.get<{ path: string; message: string }>('/upstreams/config-path')
 }
 
 export default api
