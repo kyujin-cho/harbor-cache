@@ -20,10 +20,27 @@ pub struct ActivityLogQuery {
     pub start_date: Option<String>,
     /// Filter by end date (RFC3339 format)
     pub end_date: Option<String>,
-    /// Pagination offset
+    /// Pagination offset (must be non-negative)
     pub offset: i64,
-    /// Pagination limit
+    /// Pagination limit (must be positive)
     pub limit: i64,
+}
+
+impl ActivityLogQuery {
+    /// Validates and normalizes the query parameters
+    pub fn validated(mut self) -> Self {
+        // Ensure offset is non-negative
+        if self.offset < 0 {
+            self.offset = 0;
+        }
+        // Ensure limit is positive and capped
+        if self.limit <= 0 {
+            self.limit = 50;
+        } else if self.limit > 100 {
+            self.limit = 100;
+        }
+        self
+    }
 }
 
 impl Database {
@@ -64,10 +81,16 @@ impl Database {
     }
 
     /// List activity logs with filtering and pagination
+    ///
+    /// Note: Query parameters should be validated via ActivityLogQuery::validated()
+    /// before calling this method to ensure security.
     pub async fn list_activity_logs(
         &self,
         query: ActivityLogQuery,
     ) -> Result<(Vec<ActivityLog>, i64), DbError> {
+        // Apply validation to ensure safe parameters
+        let query = query.validated();
+
         let mut conditions = Vec::new();
         let mut params: Vec<String> = Vec::new();
 
@@ -135,12 +158,15 @@ impl Database {
     }
 
     /// Get distinct action types from activity logs
+    ///
+    /// Returns up to 100 action types to prevent unbounded queries.
     pub async fn get_activity_action_types(&self) -> Result<Vec<String>, DbError> {
         let rows = sqlx::query(
             r#"
             SELECT DISTINCT action
             FROM activity_logs
             ORDER BY action
+            LIMIT 100
             "#,
         )
         .fetch_all(&self.pool)
@@ -150,12 +176,15 @@ impl Database {
     }
 
     /// Get distinct resource types from activity logs
+    ///
+    /// Returns up to 100 resource types to prevent unbounded queries.
     pub async fn get_activity_resource_types(&self) -> Result<Vec<String>, DbError> {
         let rows = sqlx::query(
             r#"
             SELECT DISTINCT resource_type
             FROM activity_logs
             ORDER BY resource_type
+            LIMIT 100
             "#,
         )
         .fetch_all(&self.pool)

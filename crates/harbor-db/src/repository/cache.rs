@@ -177,6 +177,9 @@ pub struct CacheStats {
     pub miss_count: i64,
 }
 
+/// Allowed sort fields for cache entries (whitelist to prevent SQL injection)
+const ALLOWED_CACHE_SORT_FIELDS: &[&str] = &["last_accessed_at", "created_at", "size", "access_count"];
+
 /// Query parameters for listing cache entries
 #[derive(Debug, Clone, Default)]
 pub struct CacheEntryQuery {
@@ -186,9 +189,9 @@ pub struct CacheEntryQuery {
     pub repository: Option<String>,
     /// Filter by digest (partial match)
     pub digest: Option<String>,
-    /// Pagination offset
+    /// Pagination offset (must be non-negative)
     pub offset: i64,
-    /// Pagination limit
+    /// Pagination limit (must be positive)
     pub limit: i64,
     /// Sort field: "last_accessed_at", "created_at", "size", "access_count"
     pub sort_by: Option<String>,
@@ -196,12 +199,48 @@ pub struct CacheEntryQuery {
     pub sort_order: Option<String>,
 }
 
+impl CacheEntryQuery {
+    /// Validates and normalizes the query parameters
+    pub fn validated(mut self) -> Self {
+        // Ensure offset is non-negative
+        if self.offset < 0 {
+            self.offset = 0;
+        }
+        // Ensure limit is positive and capped
+        if self.limit <= 0 {
+            self.limit = 50;
+        } else if self.limit > 100 {
+            self.limit = 100;
+        }
+        // Validate sort_by against whitelist
+        if let Some(ref sort_by) = self.sort_by {
+            if !ALLOWED_CACHE_SORT_FIELDS.contains(&sort_by.as_str()) {
+                self.sort_by = None; // Reset to default
+            }
+        }
+        // Validate sort_order
+        if let Some(ref sort_order) = self.sort_order {
+            let lower = sort_order.to_lowercase();
+            if lower != "asc" && lower != "desc" {
+                self.sort_order = None; // Reset to default
+            }
+        }
+        self
+    }
+}
+
 impl Database {
     /// List cache entries with filtering and pagination
+    ///
+    /// Note: Query parameters should be validated via CacheEntryQuery::validated()
+    /// before calling this method to ensure security.
     pub async fn list_cache_entries(
         &self,
         query: CacheEntryQuery,
     ) -> Result<(Vec<CacheEntry>, i64), DbError> {
+        // Apply validation to ensure safe parameters
+        let query = query.validated();
+
         let mut conditions = Vec::new();
         let mut params: Vec<String> = Vec::new();
 
@@ -233,15 +272,18 @@ impl Database {
         let count_row = count_query.fetch_one(&self.pool).await?;
         let total: i64 = count_row.get("count");
 
-        // Determine sort order
+        // Determine sort order using validated whitelist values only
+        // The validated() call above ensures sort_by is in ALLOWED_CACHE_SORT_FIELDS
         let sort_field = match query.sort_by.as_deref() {
             Some("created_at") => "created_at",
             Some("size") => "size",
             Some("access_count") => "access_count",
-            _ => "last_accessed_at",
+            Some("last_accessed_at") | None => "last_accessed_at",
+            // This branch should never be reached after validation, but be defensive
+            Some(_) => "last_accessed_at",
         };
         let sort_dir = match query.sort_order.as_deref() {
-            Some("asc") => "ASC",
+            Some(s) if s.eq_ignore_ascii_case("asc") => "ASC",
             _ => "DESC",
         };
 
@@ -294,6 +336,8 @@ impl Database {
     }
 
     /// Get distinct repositories from cache entries
+    ///
+    /// Returns up to 1000 repositories to prevent unbounded queries.
     pub async fn get_cached_repositories(&self) -> Result<Vec<String>, DbError> {
         let rows = sqlx::query(
             r#"
@@ -301,6 +345,7 @@ impl Database {
             FROM cache_entries
             WHERE repository IS NOT NULL
             ORDER BY repository
+            LIMIT 1000
             "#,
         )
         .fetch_all(&self.pool)

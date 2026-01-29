@@ -155,6 +155,22 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_activity_logs_user_id ON activity_logs(user_id)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_activity_logs_resource_type ON activity_logs(resource_type)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         info!("Database migrations completed");
         Ok(())
     }

@@ -6,7 +6,8 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, post, put},
 };
-use tracing::{debug, info};
+use std::path::Path as StdPath;
+use tracing::{debug, info, warn};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -16,6 +17,142 @@ use super::types::{
     ConfigEntryResponse, ConfigFileResponse, ConfigGroup, ConfigOption, ConfigSchemaField,
     ConfigSchemaResponse, UpdateConfigFileRequest, UpdateConfigRequest,
 };
+
+/// Maximum allowed size for config file content (1 MB)
+const MAX_CONFIG_CONTENT_SIZE: usize = 1024 * 1024;
+
+/// Validates that a config file path is safe to access.
+///
+/// Returns Ok(canonical_path) if safe, or Err with an ApiError if unsafe.
+fn validate_config_path(path: &str) -> Result<std::path::PathBuf, ApiError> {
+    let path_obj = StdPath::new(path);
+
+    // Check that the path is not empty
+    if path.is_empty() {
+        return Err(ApiError::BadRequest("Config path is empty".to_string()));
+    }
+
+    // Check for path traversal attempts
+    if path.contains("..") {
+        warn!("Path traversal attempt detected in config path: {}", path);
+        return Err(ApiError::BadRequest("Invalid config path".to_string()));
+    }
+
+    // Check that the file has a .toml extension
+    if path_obj.extension().and_then(|e| e.to_str()) != Some("toml") {
+        return Err(ApiError::BadRequest("Config file must have .toml extension".to_string()));
+    }
+
+    // Try to canonicalize the parent directory (it must exist)
+    if let Some(parent) = path_obj.parent() {
+        if !parent.as_os_str().is_empty() {
+            match parent.canonicalize() {
+                Ok(_) => {}
+                Err(_) => {
+                    return Err(ApiError::BadRequest("Config file parent directory does not exist".to_string()));
+                }
+            }
+        }
+    }
+
+    Ok(path_obj.to_path_buf())
+}
+
+/// Validates the semantic content of a TOML configuration.
+///
+/// This performs basic validation of known configuration fields to prevent
+/// obviously invalid values from being saved.
+fn validate_config_semantics(content: &toml::Value) -> Result<(), String> {
+    // Validate server.port if present
+    if let Some(server) = content.get("server") {
+        if let Some(port) = server.get("port") {
+            if let Some(port_num) = port.as_integer() {
+                if port_num < 1 || port_num > 65535 {
+                    return Err(format!("server.port must be between 1 and 65535, got {}", port_num));
+                }
+            }
+        }
+    }
+
+    // Validate cache.max_size if present
+    if let Some(cache) = content.get("cache") {
+        if let Some(max_size) = cache.get("max_size") {
+            if let Some(size) = max_size.as_integer() {
+                if size < 0 {
+                    return Err("cache.max_size must be non-negative".to_string());
+                }
+                // Cap at 100 TB to prevent overflow issues
+                if size > 100 * 1024 * 1024 * 1024 * 1024_i64 {
+                    return Err("cache.max_size exceeds maximum allowed value".to_string());
+                }
+            }
+        }
+        if let Some(retention_days) = cache.get("retention_days") {
+            if let Some(days) = retention_days.as_integer() {
+                if days < 1 {
+                    return Err("cache.retention_days must be at least 1".to_string());
+                }
+                if days > 3650 {
+                    return Err("cache.retention_days cannot exceed 3650 (10 years)".to_string());
+                }
+            }
+        }
+        if let Some(eviction_policy) = cache.get("eviction_policy") {
+            if let Some(policy) = eviction_policy.as_str() {
+                let valid_policies = ["lru", "lfu", "fifo"];
+                if !valid_policies.contains(&policy) {
+                    return Err(format!(
+                        "cache.eviction_policy must be one of {:?}, got '{}'",
+                        valid_policies, policy
+                    ));
+                }
+            }
+        }
+    }
+
+    // Validate logging.level if present
+    if let Some(logging) = content.get("logging") {
+        if let Some(level) = logging.get("level") {
+            if let Some(level_str) = level.as_str() {
+                let valid_levels = ["trace", "debug", "info", "warn", "error"];
+                if !valid_levels.contains(&level_str) {
+                    return Err(format!(
+                        "logging.level must be one of {:?}, got '{}'",
+                        valid_levels, level_str
+                    ));
+                }
+            }
+        }
+        if let Some(format) = logging.get("format") {
+            if let Some(format_str) = format.as_str() {
+                let valid_formats = ["pretty", "json"];
+                if !valid_formats.contains(&format_str) {
+                    return Err(format!(
+                        "logging.format must be one of {:?}, got '{}'",
+                        valid_formats, format_str
+                    ));
+                }
+            }
+        }
+    }
+
+    // Validate storage.backend if present
+    if let Some(storage) = content.get("storage") {
+        if let Some(backend) = storage.get("backend") {
+            if let Some(backend_str) = backend.as_str() {
+                let valid_backends = ["local", "s3"];
+                if !valid_backends.contains(&backend_str) {
+                    return Err(format!(
+                        "storage.backend must be one of {:?}, got '{}'",
+                        valid_backends, backend_str
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
 
 // ==================== Config Schema Definition ====================
 
@@ -495,9 +632,19 @@ async fn get_config_file(
 
     let path = config_path.read().await;
 
+    // Validate the path before reading
+    validate_config_path(&path)?;
+
     let content = tokio::fs::read_to_string(path.as_str())
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to read config file: {}", e)))?;
+
+    // Check file size to prevent memory issues with large files
+    if content.len() > MAX_CONFIG_CONTENT_SIZE {
+        return Err(ApiError::Internal(
+            "Config file exceeds maximum allowed size".to_string(),
+        ));
+    }
 
     Ok(Json(ConfigFileResponse {
         content,
@@ -511,16 +658,31 @@ async fn update_config_file(
     State(state): State<AppState>,
     Json(request): Json<UpdateConfigFileRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // Check content size limit first to prevent memory abuse
+    if request.content.len() > MAX_CONFIG_CONTENT_SIZE {
+        return Err(ApiError::BadRequest(format!(
+            "Config content exceeds maximum allowed size of {} bytes",
+            MAX_CONFIG_CONTENT_SIZE
+        )));
+    }
+
     let config_path = state
         .config_path
         .as_ref()
         .ok_or_else(|| ApiError::BadRequest("Config path not available".to_string()))?;
 
     // Validate TOML syntax
-    toml::from_str::<toml::Value>(&request.content)
+    let parsed_config = toml::from_str::<toml::Value>(&request.content)
         .map_err(|e| ApiError::BadRequest(format!("Invalid TOML syntax: {}", e)))?;
 
+    // Validate semantic content
+    validate_config_semantics(&parsed_config)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid configuration: {}", e)))?;
+
     let path = config_path.read().await;
+
+    // Validate the path before writing
+    validate_config_path(&path)?;
 
     info!("Updating config file: {}", path);
 
@@ -539,12 +701,29 @@ async fn validate_config(
     _admin: RequireAdmin,
     Json(request): Json<UpdateConfigFileRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // Check content size limit first
+    if request.content.len() > MAX_CONFIG_CONTENT_SIZE {
+        return Ok(Json(serde_json::json!({
+            "valid": false,
+            "message": format!("Config content exceeds maximum allowed size of {} bytes", MAX_CONFIG_CONTENT_SIZE)
+        })));
+    }
+
     // Validate TOML syntax
     match toml::from_str::<toml::Value>(&request.content) {
-        Ok(_) => Ok(Json(serde_json::json!({
-            "valid": true,
-            "message": "Configuration is valid"
-        }))),
+        Ok(parsed_config) => {
+            // Also validate semantic content
+            match validate_config_semantics(&parsed_config) {
+                Ok(_) => Ok(Json(serde_json::json!({
+                    "valid": true,
+                    "message": "Configuration is valid"
+                }))),
+                Err(e) => Ok(Json(serde_json::json!({
+                    "valid": false,
+                    "message": e
+                }))),
+            }
+        }
         Err(e) => Ok(Json(serde_json::json!({
             "valid": false,
             "message": format!("Invalid TOML syntax: {}", e)
