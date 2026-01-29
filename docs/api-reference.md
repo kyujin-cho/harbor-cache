@@ -525,6 +525,242 @@ Delete a configuration entry.
 
 ---
 
+### Upstream Management
+
+Manage upstream Harbor registries for multi-registry support.
+
+#### GET /api/v1/upstreams
+
+List all configured upstreams.
+
+**Required Role:** admin
+
+**Response:**
+```json
+[
+  {
+    "id": 1,
+    "name": "production-harbor",
+    "display_name": "Production Harbor",
+    "url": "https://harbor.example.com",
+    "registry": "library",
+    "skip_tls_verify": false,
+    "priority": 100,
+    "enabled": true,
+    "cache_isolation": "shared",
+    "is_default": true,
+    "has_credentials": true,
+    "created_at": "2024-01-15T10:30:00Z",
+    "updated_at": "2024-01-15T10:30:00Z"
+  }
+]
+```
+
+#### POST /api/v1/upstreams
+
+Create a new upstream.
+
+**Required Role:** admin
+
+**Request:**
+```json
+{
+  "name": "staging-harbor",
+  "display_name": "Staging Harbor",
+  "url": "https://staging-harbor.example.com",
+  "registry": "library",
+  "username": "admin",
+  "password": "secret",
+  "skip_tls_verify": false,
+  "priority": 200,
+  "enabled": true,
+  "cache_isolation": "shared",
+  "is_default": false,
+  "routes": [
+    {"pattern": "staging/*", "priority": 100}
+  ]
+}
+```
+
+**Response (201):**
+```json
+{
+  "id": 2,
+  "name": "staging-harbor",
+  "display_name": "Staging Harbor",
+  "url": "https://staging-harbor.example.com",
+  ...
+}
+```
+
+#### GET /api/v1/upstreams/{id}
+
+Get a specific upstream.
+
+**Required Role:** admin
+
+#### PUT /api/v1/upstreams/{id}
+
+Update an upstream.
+
+**Required Role:** admin
+
+**Request:**
+```json
+{
+  "display_name": "New Display Name",
+  "enabled": false,
+  "priority": 50
+}
+```
+
+All fields are optional. Only provided fields are updated.
+
+#### DELETE /api/v1/upstreams/{id}
+
+Delete an upstream.
+
+**Required Role:** admin
+
+**Response:** 204 No Content
+
+#### GET /api/v1/upstreams/{id}/routes
+
+List routes for an upstream.
+
+**Required Role:** admin
+
+**Response:**
+```json
+[
+  {
+    "id": 1,
+    "upstream_id": 1,
+    "pattern": "library/*",
+    "priority": 100,
+    "created_at": "2024-01-15T10:30:00Z"
+  }
+]
+```
+
+#### POST /api/v1/upstreams/{id}/routes
+
+Add a route to an upstream.
+
+**Required Role:** admin
+
+**Request:**
+```json
+{
+  "pattern": "team-a/**",
+  "priority": 50
+}
+```
+
+**Response (201):**
+```json
+{
+  "id": 2,
+  "upstream_id": 1,
+  "pattern": "team-a/**",
+  "priority": 50,
+  "created_at": "2024-01-17T10:00:00Z"
+}
+```
+
+#### DELETE /api/v1/upstreams/{upstream_id}/routes/{route_id}
+
+Delete a route.
+
+**Required Role:** admin
+
+**Response:** 204 No Content
+
+#### GET /api/v1/upstreams/{id}/health
+
+Check health of an upstream.
+
+**Required Role:** admin
+
+**Response:**
+```json
+{
+  "upstream_id": 1,
+  "name": "production-harbor",
+  "healthy": true,
+  "last_check": "2024-01-17T10:00:00Z",
+  "last_error": null,
+  "consecutive_failures": 0
+}
+```
+
+#### GET /api/v1/upstreams/health
+
+Check health of all upstreams.
+
+**Required Role:** admin
+
+**Response:**
+```json
+[
+  {
+    "upstream_id": 1,
+    "name": "production-harbor",
+    "healthy": true,
+    "last_check": "2024-01-17T10:00:00Z",
+    "last_error": null,
+    "consecutive_failures": 0
+  }
+]
+```
+
+#### GET /api/v1/upstreams/{id}/stats
+
+Get cache statistics for a specific upstream.
+
+**Required Role:** admin
+
+**Response:**
+```json
+{
+  "total_size": 1073741824,
+  "total_size_human": "1.00 GB",
+  "entry_count": 42,
+  "manifest_count": 10,
+  "blob_count": 32,
+  "hit_count": 150,
+  "miss_count": 50,
+  "hit_rate": 0.75
+}
+```
+
+#### POST /api/v1/upstreams/test
+
+Test connection to an upstream without saving.
+
+**Required Role:** admin
+
+**Request:**
+```json
+{
+  "url": "https://harbor.example.com",
+  "registry": "library",
+  "username": "admin",
+  "password": "secret",
+  "skip_tls_verify": false
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Connection successful"
+}
+```
+
+---
+
 ## Error Responses
 
 All errors follow the OCI Distribution Spec error format:

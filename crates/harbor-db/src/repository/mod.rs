@@ -1,6 +1,6 @@
 //! Database repository implementation
 
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use tracing::info;
 
 use crate::error::DbError;
@@ -10,6 +10,7 @@ mod activity_logs;
 mod cache;
 mod config;
 mod sessions;
+mod upstreams;
 mod users;
 
 // Re-export CacheStats and CacheEntryQuery
@@ -170,6 +171,102 @@ impl Database {
         )
         .execute(&self.pool)
         .await?;
+
+        // Create upstreams table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS upstreams (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                display_name TEXT NOT NULL,
+                url TEXT NOT NULL,
+                registry TEXT NOT NULL,
+                username TEXT,
+                password TEXT,
+                skip_tls_verify INTEGER DEFAULT 0,
+                priority INTEGER DEFAULT 100,
+                enabled INTEGER DEFAULT 1,
+                cache_isolation TEXT DEFAULT 'shared',
+                is_default INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_upstreams_name ON upstreams(name)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_upstreams_priority ON upstreams(priority)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Create upstream routes table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS upstream_routes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                upstream_id INTEGER NOT NULL,
+                pattern TEXT NOT NULL,
+                priority INTEGER DEFAULT 100,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (upstream_id) REFERENCES upstreams(id) ON DELETE CASCADE
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_upstream_routes_upstream_id ON upstream_routes(upstream_id)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_upstream_routes_priority ON upstream_routes(priority)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Add upstream_id to cache_entries for isolated caching (optional column)
+        // Check if column exists first
+        let column_exists: bool = sqlx::query(
+            "SELECT COUNT(*) as count FROM pragma_table_info('cache_entries') WHERE name = 'upstream_id'"
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map(|row| row.get::<i64, _>("count") > 0)
+        .unwrap_or(false);
+
+        if !column_exists {
+            sqlx::query("ALTER TABLE cache_entries ADD COLUMN upstream_id INTEGER")
+                .execute(&self.pool)
+                .await?;
+
+            sqlx::query(
+                r#"
+                CREATE INDEX IF NOT EXISTS idx_cache_entries_upstream_id ON cache_entries(upstream_id)
+                "#,
+            )
+            .execute(&self.pool)
+            .await?;
+        }
 
         info!("Database migrations completed");
         Ok(())

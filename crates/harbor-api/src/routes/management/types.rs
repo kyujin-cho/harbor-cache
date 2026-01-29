@@ -232,3 +232,135 @@ pub struct ActivityLogsQuery {
     #[serde(default = "default_limit")]
     pub limit: i64,
 }
+
+// ==================== Upstream Types ====================
+
+/// Upstream response
+#[derive(Serialize)]
+pub struct UpstreamResponse {
+    pub id: i64,
+    pub name: String,
+    pub display_name: String,
+    pub url: String,
+    pub registry: String,
+    pub skip_tls_verify: bool,
+    pub priority: i32,
+    pub enabled: bool,
+    pub cache_isolation: String,
+    pub is_default: bool,
+    pub has_credentials: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Create upstream request
+#[derive(Deserialize)]
+pub struct CreateUpstreamRequest {
+    pub name: String,
+    pub display_name: String,
+    pub url: String,
+    pub registry: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub skip_tls_verify: bool,
+    #[serde(default = "default_priority")]
+    pub priority: i32,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_cache_isolation")]
+    pub cache_isolation: String,
+    #[serde(default)]
+    pub is_default: bool,
+    /// Route patterns for this upstream
+    #[serde(default)]
+    pub routes: Vec<CreateRouteRequest>,
+}
+
+fn default_priority() -> i32 {
+    100
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+fn default_cache_isolation() -> String {
+    "shared".to_string()
+}
+
+/// Create route request
+#[derive(Deserialize)]
+pub struct CreateRouteRequest {
+    pub pattern: String,
+    #[serde(default = "default_priority")]
+    pub priority: i32,
+}
+
+/// Update upstream request
+#[derive(Deserialize)]
+pub struct UpdateUpstreamRequest {
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub registry: Option<String>,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub skip_tls_verify: Option<bool>,
+    #[serde(default)]
+    pub priority: Option<i32>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub cache_isolation: Option<String>,
+    #[serde(default)]
+    pub is_default: Option<bool>,
+}
+
+/// Upstream health response
+#[derive(Serialize)]
+pub struct UpstreamHealthResponse {
+    pub upstream_id: i64,
+    pub name: String,
+    pub healthy: bool,
+    pub last_check: String,
+    pub last_error: Option<String>,
+    pub consecutive_failures: u32,
+}
+
+/// Upstream route response
+#[derive(Serialize)]
+pub struct UpstreamRouteResponse {
+    pub id: i64,
+    pub upstream_id: i64,
+    pub pattern: String,
+    pub priority: i32,
+    pub created_at: String,
+}
+
+/// Test upstream connection request
+#[derive(Deserialize)]
+pub struct TestUpstreamRequest {
+    pub url: String,
+    pub registry: String,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub skip_tls_verify: bool,
+}
+
+/// Test upstream connection response
+#[derive(Serialize)]
+pub struct TestUpstreamResponse {
+    pub success: bool,
+    pub message: String,
+}

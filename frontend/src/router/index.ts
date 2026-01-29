@@ -29,6 +29,12 @@ const router = createRouter({
       meta: { requiresAuth: true, requiresAdmin: true }
     },
     {
+      path: '/upstreams',
+      name: 'upstreams',
+      component: () => import('../views/UpstreamsView.vue'),
+      meta: { requiresAuth: true, requiresAdmin: true }
+    },
+    {
       path: '/config',
       name: 'config',
       component: () => import('../views/ConfigView.vue'),

@@ -15,8 +15,8 @@ impl Database {
         let now = Utc::now();
         let result = sqlx::query(
             r#"
-            INSERT INTO cache_entries (entry_type, repository, reference, digest, content_type, size, created_at, last_accessed_at, access_count, storage_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            INSERT INTO cache_entries (entry_type, repository, reference, digest, content_type, size, created_at, last_accessed_at, access_count, storage_path, upstream_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
             RETURNING id
             "#,
         )
@@ -29,6 +29,7 @@ impl Database {
         .bind(now.to_rfc3339())
         .bind(now.to_rfc3339())
         .bind(&entry.storage_path)
+        .bind(entry.upstream_id)
         .fetch_one(&self.pool)
         .await?;
 
@@ -46,6 +47,7 @@ impl Database {
             last_accessed_at: now,
             access_count: 1,
             storage_path: entry.storage_path,
+            upstream_id: entry.upstream_id,
         })
     }
 
@@ -56,7 +58,7 @@ impl Database {
     ) -> Result<Option<CacheEntry>, DbError> {
         let result = sqlx::query(
             r#"
-            SELECT id, entry_type, repository, reference, digest, content_type, size, created_at, last_accessed_at, access_count, storage_path
+            SELECT id, entry_type, repository, reference, digest, content_type, size, created_at, last_accessed_at, access_count, storage_path, upstream_id
             FROM cache_entries
             WHERE digest = ?
             "#,
@@ -64,6 +66,42 @@ impl Database {
         .bind(digest)
         .fetch_optional(&self.pool)
         .await?;
+
+        result
+            .map(|row| CacheEntry::try_from(&row).map_err(DbError::from))
+            .transpose()
+    }
+
+    /// Get a cache entry by digest and upstream ID (for isolated caching)
+    pub async fn get_cache_entry_by_digest_and_upstream(
+        &self,
+        digest: &str,
+        upstream_id: Option<i64>,
+    ) -> Result<Option<CacheEntry>, DbError> {
+        let result = if let Some(uid) = upstream_id {
+            sqlx::query(
+                r#"
+                SELECT id, entry_type, repository, reference, digest, content_type, size, created_at, last_accessed_at, access_count, storage_path, upstream_id
+                FROM cache_entries
+                WHERE digest = ? AND upstream_id = ?
+                "#,
+            )
+            .bind(digest)
+            .bind(uid)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"
+                SELECT id, entry_type, repository, reference, digest, content_type, size, created_at, last_accessed_at, access_count, storage_path, upstream_id
+                FROM cache_entries
+                WHERE digest = ? AND upstream_id IS NULL
+                "#,
+            )
+            .bind(digest)
+            .fetch_optional(&self.pool)
+            .await?
+        };
 
         result
             .map(|row| CacheEntry::try_from(&row).map_err(DbError::from))
@@ -100,7 +138,7 @@ impl Database {
     pub async fn get_cache_entries_lru(&self, limit: i64) -> Result<Vec<CacheEntry>, DbError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, entry_type, repository, reference, digest, content_type, size, created_at, last_accessed_at, access_count, storage_path
+            SELECT id, entry_type, repository, reference, digest, content_type, size, created_at, last_accessed_at, access_count, storage_path, upstream_id
             FROM cache_entries
             ORDER BY last_accessed_at ASC
             LIMIT ?
@@ -148,6 +186,53 @@ impl Database {
                 .fetch_one(&self.pool)
                 .await?
                 .get("count");
+
+        Ok(CacheStats {
+            total_size,
+            entry_count,
+            manifest_count,
+            blob_count,
+            hit_count: 0,
+            miss_count: 0,
+        })
+    }
+
+    /// Get cache statistics for a specific upstream
+    pub async fn get_cache_stats_by_upstream(
+        &self,
+        upstream_id: i64,
+    ) -> Result<CacheStats, DbError> {
+        let total_size: i64 = sqlx::query(
+            "SELECT COALESCE(SUM(size), 0) as total FROM cache_entries WHERE upstream_id = ?",
+        )
+        .bind(upstream_id)
+        .fetch_one(&self.pool)
+        .await?
+        .get("total");
+
+        let entry_count: i64 = sqlx::query(
+            "SELECT COUNT(*) as count FROM cache_entries WHERE upstream_id = ?",
+        )
+        .bind(upstream_id)
+        .fetch_one(&self.pool)
+        .await?
+        .get("count");
+
+        let manifest_count: i64 = sqlx::query(
+            "SELECT COUNT(*) as count FROM cache_entries WHERE entry_type = 'manifest' AND upstream_id = ?",
+        )
+        .bind(upstream_id)
+        .fetch_one(&self.pool)
+        .await?
+        .get("count");
+
+        let blob_count: i64 = sqlx::query(
+            "SELECT COUNT(*) as count FROM cache_entries WHERE entry_type = 'blob' AND upstream_id = ?",
+        )
+        .bind(upstream_id)
+        .fetch_one(&self.pool)
+        .await?
+        .get("count");
 
         Ok(CacheStats {
             total_size,
@@ -295,7 +380,7 @@ impl Database {
         let sql = format!(
             r#"
             SELECT id, entry_type, repository, reference, digest, content_type, size,
-                   created_at, last_accessed_at, access_count, storage_path
+                   created_at, last_accessed_at, access_count, storage_path, upstream_id
             FROM cache_entries
             {}
             ORDER BY {} {}
@@ -324,7 +409,7 @@ impl Database {
         let rows = sqlx::query(
             r#"
             SELECT id, entry_type, repository, reference, digest, content_type, size,
-                   created_at, last_accessed_at, access_count, storage_path
+                   created_at, last_accessed_at, access_count, storage_path, upstream_id
             FROM cache_entries
             ORDER BY access_count DESC
             LIMIT ?

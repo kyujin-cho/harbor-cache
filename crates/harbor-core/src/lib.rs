@@ -6,7 +6,9 @@
 pub mod cache;
 pub mod error;
 pub mod registry;
+pub mod upstream;
 
 pub use cache::{CacheConfig, CacheManager, EvictionPolicy, spawn_cleanup_task};
 pub use error::CoreError;
 pub use registry::RegistryService;
+pub use upstream::{UpstreamHealth, UpstreamInfo, UpstreamManager};
