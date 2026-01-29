@@ -16,6 +16,9 @@ pub struct RouteMatch {
     pub priority: i32,
 }
 
+/// Maximum iterations allowed for pattern matching to prevent ReDoS
+const MAX_MATCH_ITERATIONS: usize = 10000;
+
 /// Route matcher for upstream selection
 pub struct RouteMatcher {
     routes: Vec<CompiledRoute>,
@@ -115,10 +118,27 @@ impl RouteMatcher {
 
     /// Check if a pattern matches a repository path
     fn matches_pattern(parts: &[PatternPart], path: &str) -> bool {
-        Self::match_recursive(parts, path, 0, 0)
+        let mut iterations = 0;
+        Self::match_recursive(parts, path, 0, 0, &mut iterations)
     }
 
-    fn match_recursive(parts: &[PatternPart], path: &str, part_idx: usize, path_pos: usize) -> bool {
+    fn match_recursive(
+        parts: &[PatternPart],
+        path: &str,
+        part_idx: usize,
+        path_pos: usize,
+        iterations: &mut usize,
+    ) -> bool {
+        // Prevent ReDoS by limiting iterations
+        *iterations += 1;
+        if *iterations > MAX_MATCH_ITERATIONS {
+            tracing::warn!(
+                "Pattern matching exceeded {} iterations, aborting",
+                MAX_MATCH_ITERATIONS
+            );
+            return false;
+        }
+
         // Base cases
         if part_idx >= parts.len() {
             // Pattern exhausted, check if path is also exhausted
@@ -130,7 +150,7 @@ impl RouteMatcher {
         match &parts[part_idx] {
             PatternPart::Literal(lit) => {
                 if path_remaining.starts_with(lit) {
-                    Self::match_recursive(parts, path, part_idx + 1, path_pos + lit.len())
+                    Self::match_recursive(parts, path, part_idx + 1, path_pos + lit.len(), iterations)
                 } else {
                     false
                 }
@@ -139,10 +159,10 @@ impl RouteMatcher {
                 // Match any characters until the next '/' or end
                 if let Some(slash_pos) = path_remaining.find('/') {
                     // There's a slash, wildcard matches up to it
-                    Self::match_recursive(parts, path, part_idx + 1, path_pos + slash_pos)
+                    Self::match_recursive(parts, path, part_idx + 1, path_pos + slash_pos, iterations)
                 } else {
                     // No slash, wildcard matches to end
-                    Self::match_recursive(parts, path, part_idx + 1, path.len())
+                    Self::match_recursive(parts, path, part_idx + 1, path.len(), iterations)
                 }
             }
             PatternPart::MultiWildcard => {
@@ -157,7 +177,7 @@ impl RouteMatcher {
 
                 // Try matching at each position
                 for i in 0..=path_remaining.len() {
-                    if Self::match_recursive(parts, path, part_idx + 1, path_pos + i) {
+                    if Self::match_recursive(parts, path, part_idx + 1, path_pos + i, iterations) {
                         return true;
                     }
                 }
