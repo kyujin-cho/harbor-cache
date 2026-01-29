@@ -79,6 +79,7 @@ futures = "0.3"
 async-trait = "0.1"
 url = "2.5"
 parking_lot = "0.12"
+tempfile = "3.14"
 
 # Metrics
 metrics = "0.24"

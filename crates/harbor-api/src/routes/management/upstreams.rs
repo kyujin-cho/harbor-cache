@@ -11,8 +11,9 @@ use axum::{
 };
 use harbor_core::{UpstreamConfig, UpstreamRouteConfig};
 use harbor_proxy::{HarborClient, HarborClientConfig};
-use std::net::IpAddr;
-use tracing::{debug, info};
+use std::net::{IpAddr, ToSocketAddrs};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::error::ApiError;
@@ -23,6 +24,13 @@ use super::types::{
     CreateUpstreamRequest, TestUpstreamRequest, TestUpstreamResponse, UpdateUpstreamRequest,
     UpstreamHealthResponse, UpstreamResponse, UpstreamRouteResponse,
 };
+
+// ==================== Rate Limiting ====================
+
+/// Simple rate limiter for reload operations
+/// Allows at most one reload per RELOAD_COOLDOWN_SECS seconds
+static LAST_RELOAD_TIME: AtomicU64 = AtomicU64::new(0);
+const RELOAD_COOLDOWN_SECS: u64 = 5;
 
 // ==================== Input Validation ====================
 
@@ -98,6 +106,59 @@ fn validate_upstream_url(url_str: &str) -> Result<(), ApiError> {
         return Err(ApiError::BadRequest(
             "Private or reserved IP addresses are not allowed for security reasons".to_string(),
         ));
+    }
+
+    Ok(())
+}
+
+/// Validate upstream URL with DNS resolution to prevent DNS rebinding attacks.
+/// This performs actual DNS resolution to verify the hostname doesn't resolve to internal IPs.
+async fn validate_upstream_url_with_dns(url_str: &str) -> Result<(), ApiError> {
+    // First, perform basic validation
+    validate_upstream_url(url_str)?;
+
+    // Parse URL to get host and port
+    let url = Url::parse(url_str).map_err(|e| ApiError::BadRequest(format!("Invalid URL: {}", e)))?;
+
+    let host = url.host_str().ok_or_else(|| ApiError::BadRequest("URL must have a host".to_string()))?;
+
+    // If it's already an IP, we already validated it above
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+
+    // Resolve the hostname to IP addresses
+    let port = url.port().unwrap_or(if url.scheme() == "https" { 443 } else { 80 });
+    let addr_str = format!("{}:{}", host, port);
+
+    // Use spawn_blocking for DNS resolution to avoid blocking the async runtime
+    let resolved = tokio::task::spawn_blocking(move || {
+        addr_str.to_socket_addrs().map(|addrs| addrs.collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("DNS resolution task failed: {}", e)))?
+    .map_err(|e| ApiError::BadRequest(format!("Failed to resolve hostname '{}': {}", host, e)))?;
+
+    if resolved.is_empty() {
+        return Err(ApiError::BadRequest(format!(
+            "Hostname '{}' did not resolve to any IP addresses",
+            host
+        )));
+    }
+
+    // Check all resolved IPs - reject if ANY resolve to private/reserved ranges
+    for addr in &resolved {
+        if is_private_or_reserved_ip(&addr.ip()) {
+            warn!(
+                "DNS rebinding protection: hostname '{}' resolves to private IP {}",
+                host,
+                addr.ip()
+            );
+            return Err(ApiError::BadRequest(format!(
+                "Hostname '{}' resolves to a private or reserved IP address, which is not allowed for security reasons",
+                host
+            )));
+        }
     }
 
     Ok(())
@@ -311,7 +372,8 @@ async fn create_upstream(
     // Validate all input fields
     validate_upstream_name(&request.name)?;
     validate_display_name(&request.display_name)?;
-    validate_upstream_url(&request.url)?;
+    // Use DNS-resolving validation to prevent DNS rebinding attacks
+    validate_upstream_url_with_dns(&request.url).await?;
     validate_registry_name(&request.registry)?;
 
     // Validate routes if provided
@@ -412,7 +474,8 @@ async fn update_upstream(
         validate_display_name(display_name)?;
     }
     if let Some(ref url) = request.url {
-        validate_upstream_url(url)?;
+        // Use DNS-resolving validation to prevent DNS rebinding attacks
+        validate_upstream_url_with_dns(url).await?;
     }
     if let Some(ref registry) = request.registry {
         validate_registry_name(registry)?;
@@ -717,8 +780,8 @@ async fn test_upstream_connection(
 ) -> Result<Json<TestUpstreamResponse>, ApiError> {
     debug!("Testing upstream connection: {}", request.url);
 
-    // Validate URL to prevent SSRF attacks
-    validate_upstream_url(&request.url)?;
+    // Validate URL to prevent SSRF attacks (with DNS resolution check)
+    validate_upstream_url_with_dns(&request.url).await?;
     validate_registry_name(&request.registry)?;
 
     let config = HarborClientConfig {
@@ -778,11 +841,38 @@ async fn get_upstream_stats(
 }
 
 /// POST /api/v1/upstreams/reload (Admin only) - Reload upstream configuration from file
+///
+/// Rate limited to prevent abuse - only one reload allowed per RELOAD_COOLDOWN_SECS seconds.
 async fn reload_upstreams(
     _admin: RequireAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     debug!("Reloading upstream configuration");
+
+    // Rate limiting check using atomic timestamp
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let last_reload = LAST_RELOAD_TIME.load(Ordering::Relaxed);
+    if now - last_reload < RELOAD_COOLDOWN_SECS {
+        let wait_time = RELOAD_COOLDOWN_SECS - (now - last_reload);
+        return Err(ApiError::BadRequest(format!(
+            "Rate limit exceeded. Please wait {} seconds before reloading again.",
+            wait_time
+        )));
+    }
+
+    // Update the last reload time (simple CAS to handle concurrent requests)
+    if LAST_RELOAD_TIME
+        .compare_exchange(last_reload, now, Ordering::SeqCst, Ordering::Relaxed)
+        .is_err()
+    {
+        return Err(ApiError::BadRequest(
+            "Another reload operation is in progress. Please try again.".to_string(),
+        ));
+    }
 
     state
         .upstream_manager

@@ -3,9 +3,13 @@
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::{info, warn};
+
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 /// Main configuration structure
 /// Supports both old single [upstream] and new [[upstreams]] array format
@@ -303,13 +307,46 @@ impl Config {
         }
     }
 
-    /// Save configuration to a file
+    /// Save configuration to a file atomically
+    ///
+    /// This uses a write-to-temp-then-rename strategy to ensure atomic updates.
+    /// If the process crashes mid-write, the original file remains intact.
     pub fn save(&self, path: &str) -> Result<()> {
         let content = toml::to_string_pretty(self)
             .with_context(|| "Failed to serialize configuration")?;
 
-        std::fs::write(path, &content)
-            .with_context(|| format!("Failed to write config file: {}", path))?;
+        let path_obj = Path::new(path);
+        let parent = path_obj.parent().unwrap_or(Path::new("."));
+
+        // Create a temporary file in the same directory (for atomic rename)
+        let temp_file = tempfile::NamedTempFile::new_in(parent)
+            .with_context(|| format!("Failed to create temp file in {:?}", parent))?;
+
+        // Write content to temp file
+        {
+            let mut file = temp_file.as_file();
+            file.write_all(content.as_bytes())
+                .with_context(|| "Failed to write to temp file")?;
+            file.sync_all()
+                .with_context(|| "Failed to sync temp file")?;
+        }
+
+        // Set restrictive permissions on Unix (0600 - owner read/write only)
+        // This protects credentials stored in the config file
+        #[cfg(unix)]
+        {
+            let metadata = temp_file.as_file().metadata()?;
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(temp_file.path(), perms)
+                .with_context(|| "Failed to set config file permissions")?;
+        }
+
+        // Atomically rename temp file to target path
+        // This is atomic on POSIX systems when src and dest are on the same filesystem
+        temp_file
+            .persist(path)
+            .with_context(|| format!("Failed to persist config file: {}", path))?;
 
         info!("Saved configuration to {}", path);
         Ok(())
@@ -524,5 +561,81 @@ impl ConfigManager {
     pub fn set_path(&self, path: String) {
         let mut p = self.path.write();
         *p = path;
+    }
+
+    // ==================== Async versions for use in async contexts ====================
+    // These avoid blocking the async runtime by using spawn_blocking for file I/O
+
+    /// Add a new upstream and save to file (async version)
+    pub async fn add_upstream_async(&self, upstream: UpstreamConfig) -> Result<()> {
+        // First, update the in-memory config (quick, no blocking)
+        {
+            let mut config = self.config.write();
+            config.add_upstream(upstream)?;
+        }
+
+        // Then save to file using spawn_blocking to avoid blocking the async runtime
+        let config_clone = self.get_config();
+        let path = self.get_path();
+        tokio::task::spawn_blocking(move || config_clone.save(&path))
+            .await
+            .map_err(|e| anyhow::anyhow!("Task join error: {}", e))??;
+
+        Ok(())
+    }
+
+    /// Update an existing upstream and save to file (async version)
+    pub async fn update_upstream_async(&self, name: &str, updated: UpstreamConfig) -> Result<()> {
+        // First, update the in-memory config (quick, no blocking)
+        {
+            let mut config = self.config.write();
+            config.update_upstream(name, updated)?;
+        }
+
+        // Then save to file using spawn_blocking
+        let config_clone = self.get_config();
+        let path = self.get_path();
+        tokio::task::spawn_blocking(move || config_clone.save(&path))
+            .await
+            .map_err(|e| anyhow::anyhow!("Task join error: {}", e))??;
+
+        Ok(())
+    }
+
+    /// Remove an upstream and save to file (async version)
+    pub async fn remove_upstream_async(&self, name: &str) -> Result<UpstreamConfig> {
+        // First, remove from in-memory config (quick, no blocking)
+        let removed = {
+            let mut config = self.config.write();
+            config.remove_upstream(name)?
+        };
+
+        // Then save to file using spawn_blocking
+        let config_clone = self.get_config();
+        let path = self.get_path();
+        tokio::task::spawn_blocking(move || config_clone.save(&path))
+            .await
+            .map_err(|e| anyhow::anyhow!("Task join error: {}", e))??;
+
+        Ok(removed)
+    }
+
+    /// Reload configuration from file (async version)
+    pub async fn reload_async(&self) -> Result<()> {
+        let path = self.get_path();
+
+        // Load config in a blocking task
+        let new_config = tokio::task::spawn_blocking(move || Config::load(&path))
+            .await
+            .map_err(|e| anyhow::anyhow!("Task join error: {}", e))??;
+
+        // Update in-memory config
+        {
+            let mut config = self.config.write();
+            *config = new_config;
+        }
+
+        info!("Configuration reloaded from {}", self.get_path());
+        Ok(())
     }
 }
