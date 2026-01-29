@@ -7,7 +7,8 @@ import {
   UsersIcon,
   Cog6ToothIcon,
   ArrowRightOnRectangleIcon,
-  ClipboardDocumentListIcon
+  ClipboardDocumentListIcon,
+  ServerStackIcon
 } from '@heroicons/vue/24/outline'
 
 const authStore = useAuthStore()
@@ -20,6 +21,7 @@ function handleLogout() {
 const navigation = [
   { name: 'Dashboard', to: '/', icon: HomeIcon },
   { name: 'Cache', to: '/cache', icon: ArchiveBoxIcon },
+  { name: 'Upstreams', to: '/upstreams', icon: ServerStackIcon, adminOnly: true },
   { name: 'Users', to: '/users', icon: UsersIcon, adminOnly: true },
   { name: 'Config', to: '/config', icon: Cog6ToothIcon, adminOnly: true },
   { name: 'Logs', to: '/logs', icon: ClipboardDocumentListIcon, adminOnly: true }

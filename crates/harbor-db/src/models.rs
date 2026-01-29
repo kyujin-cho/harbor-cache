@@ -68,6 +68,9 @@ pub struct CacheEntry {
     pub last_accessed_at: DateTime<Utc>,
     pub access_count: i64,
     pub storage_path: String,
+    /// Optional upstream ID for cache isolation
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_id: Option<i64>,
 }
 
 /// User role
@@ -151,6 +154,8 @@ pub struct NewCacheEntry {
     pub content_type: String,
     pub size: i64,
     pub storage_path: String,
+    /// Optional upstream ID for cache isolation
+    pub upstream_id: Option<i64>,
 }
 
 /// New user (for insertion)
@@ -195,6 +200,122 @@ pub struct NewActivityLog {
     pub ip_address: Option<String>,
 }
 
+/// Cache isolation mode for upstreams
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[derive(Default)]
+pub enum CacheIsolation {
+    /// Share cache across all upstreams (deduplicate by digest)
+    #[default]
+    Shared,
+    /// Isolate cache per upstream
+    Isolated,
+}
+
+impl CacheIsolation {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CacheIsolation::Shared => "shared",
+            CacheIsolation::Isolated => "isolated",
+        }
+    }
+}
+
+impl FromStr for CacheIsolation {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "shared" => Ok(CacheIsolation::Shared),
+            "isolated" => Ok(CacheIsolation::Isolated),
+            _ => Err(ParseError::InvalidEntryType(s.to_string())),
+        }
+    }
+}
+
+/// Upstream registry configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Upstream {
+    pub id: i64,
+    /// Unique identifier for the upstream (used in API)
+    pub name: String,
+    /// Display name for UI
+    pub display_name: String,
+    /// URL of the upstream Harbor registry
+    pub url: String,
+    /// Registry/project name
+    pub registry: String,
+    /// Username for authentication
+    #[serde(skip_serializing)]
+    pub username: Option<String>,
+    /// Password for authentication (never serialized)
+    #[serde(skip_serializing)]
+    pub password: Option<String>,
+    /// Skip TLS certificate verification
+    pub skip_tls_verify: bool,
+    /// Priority for route matching (lower = higher priority)
+    pub priority: i32,
+    /// Whether this upstream is enabled
+    pub enabled: bool,
+    /// Cache isolation mode
+    pub cache_isolation: CacheIsolation,
+    /// Whether this is the default upstream (fallback)
+    pub is_default: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// New upstream (for insertion)
+#[derive(Debug, Clone)]
+pub struct NewUpstream {
+    pub name: String,
+    pub display_name: String,
+    pub url: String,
+    pub registry: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub skip_tls_verify: bool,
+    pub priority: i32,
+    pub enabled: bool,
+    pub cache_isolation: CacheIsolation,
+    pub is_default: bool,
+}
+
+/// Update upstream (for partial updates)
+#[derive(Debug, Clone, Default)]
+pub struct UpdateUpstream {
+    pub display_name: Option<String>,
+    pub url: Option<String>,
+    pub registry: Option<String>,
+    pub username: Option<Option<String>>,
+    pub password: Option<Option<String>>,
+    pub skip_tls_verify: Option<bool>,
+    pub priority: Option<i32>,
+    pub enabled: Option<bool>,
+    pub cache_isolation: Option<CacheIsolation>,
+    pub is_default: Option<bool>,
+}
+
+/// Upstream route pattern
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpstreamRoute {
+    pub id: i64,
+    pub upstream_id: i64,
+    /// Pattern to match repository paths (supports glob patterns)
+    pub pattern: String,
+    /// Priority for this route (lower = higher priority)
+    pub priority: i32,
+    pub created_at: DateTime<Utc>,
+}
+
+/// New upstream route (for insertion)
+#[derive(Debug, Clone)]
+pub struct NewUpstreamRoute {
+    pub upstream_id: i64,
+    pub pattern: String,
+    pub priority: i32,
+}
+
 // ==================== TryFrom Implementations ====================
 
 impl TryFrom<&sqlx::sqlite::SqliteRow> for CacheEntry {
@@ -214,6 +335,7 @@ impl TryFrom<&sqlx::sqlite::SqliteRow> for CacheEntry {
             last_accessed_at: parse_datetime_or_now(&row.try_get::<String, _>("last_accessed_at")?),
             access_count: row.try_get("access_count")?,
             storage_path: row.try_get("storage_path")?,
+            upstream_id: row.try_get("upstream_id").ok(),
         })
     }
 }
@@ -275,6 +397,45 @@ impl TryFrom<&sqlx::sqlite::SqliteRow> for ActivityLog {
             username: row.try_get("username")?,
             details: row.try_get("details")?,
             ip_address: row.try_get("ip_address")?,
+        })
+    }
+}
+
+impl TryFrom<&sqlx::sqlite::SqliteRow> for Upstream {
+    type Error = sqlx::Error;
+
+    fn try_from(row: &sqlx::sqlite::SqliteRow) -> Result<Self, Self::Error> {
+        let cache_isolation_str: String = row.try_get("cache_isolation")?;
+        Ok(Upstream {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            display_name: row.try_get("display_name")?,
+            url: row.try_get("url")?,
+            registry: row.try_get("registry")?,
+            username: row.try_get("username")?,
+            password: row.try_get("password")?,
+            skip_tls_verify: row.try_get("skip_tls_verify")?,
+            priority: row.try_get("priority")?,
+            enabled: row.try_get("enabled")?,
+            cache_isolation: CacheIsolation::from_str(&cache_isolation_str)
+                .unwrap_or(CacheIsolation::Shared),
+            is_default: row.try_get("is_default")?,
+            created_at: parse_datetime_or_now(&row.try_get::<String, _>("created_at")?),
+            updated_at: parse_datetime_or_now(&row.try_get::<String, _>("updated_at")?),
+        })
+    }
+}
+
+impl TryFrom<&sqlx::sqlite::SqliteRow> for UpstreamRoute {
+    type Error = sqlx::Error;
+
+    fn try_from(row: &sqlx::sqlite::SqliteRow) -> Result<Self, Self::Error> {
+        Ok(UpstreamRoute {
+            id: row.try_get("id")?,
+            upstream_id: row.try_get("upstream_id")?,
+            pattern: row.try_get("pattern")?,
+            priority: row.try_get("priority")?,
+            created_at: parse_datetime_or_now(&row.try_get::<String, _>("created_at")?),
         })
     }
 }

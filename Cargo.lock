@@ -887,10 +887,12 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "chrono",
  "futures",
  "harbor-auth",
  "harbor-core",
  "harbor-db",
+ "harbor-proxy",
  "harbor-storage",
  "metrics",
  "metrics-exporter-prometheus",
@@ -904,6 +906,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -964,6 +967,7 @@ dependencies = [
  "harbor-proxy",
  "harbor-storage",
  "hex",
+ "parking_lot",
  "serde",
  "sha2",
  "thiserror 2.0.18",

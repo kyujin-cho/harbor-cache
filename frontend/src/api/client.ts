@@ -206,4 +206,96 @@ export const logsApi = {
   getResourceTypes: () => api.get<string[]>('/logs/resource-types')
 }
 
+// Upstreams API
+export interface Upstream {
+  id: number
+  name: string
+  display_name: string
+  url: string
+  registry: string
+  skip_tls_verify: boolean
+  priority: number
+  enabled: boolean
+  cache_isolation: string
+  is_default: boolean
+  has_credentials: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface UpstreamRoute {
+  id: number
+  upstream_id: number
+  pattern: string
+  priority: number
+  created_at: string
+}
+
+export interface UpstreamHealth {
+  upstream_id: number
+  name: string
+  healthy: boolean
+  last_check: string
+  last_error: string | null
+  consecutive_failures: number
+}
+
+export interface CreateUpstreamRequest {
+  name: string
+  display_name: string
+  url: string
+  registry: string
+  username?: string
+  password?: string
+  skip_tls_verify?: boolean
+  priority?: number
+  enabled?: boolean
+  cache_isolation?: string
+  is_default?: boolean
+  routes?: { pattern: string; priority?: number }[]
+}
+
+export interface UpdateUpstreamRequest {
+  display_name?: string
+  url?: string
+  registry?: string
+  username?: string
+  password?: string
+  skip_tls_verify?: boolean
+  priority?: number
+  enabled?: boolean
+  cache_isolation?: string
+  is_default?: boolean
+}
+
+export interface TestUpstreamRequest {
+  url: string
+  registry: string
+  username?: string
+  password?: string
+  skip_tls_verify?: boolean
+}
+
+export interface TestUpstreamResponse {
+  success: boolean
+  message: string
+}
+
+export const upstreamsApi = {
+  list: () => api.get<Upstream[]>('/upstreams'),
+  get: (id: number) => api.get<Upstream>(`/upstreams/${id}`),
+  create: (data: CreateUpstreamRequest) => api.post<Upstream>('/upstreams', data),
+  update: (id: number, data: UpdateUpstreamRequest) => api.put<Upstream>(`/upstreams/${id}`, data),
+  delete: (id: number) => api.delete(`/upstreams/${id}`),
+  getHealth: (id: number) => api.get<UpstreamHealth>(`/upstreams/${id}/health`),
+  getAllHealth: () => api.get<UpstreamHealth[]>('/upstreams/health'),
+  getStats: (id: number) => api.get<CacheStats>(`/upstreams/${id}/stats`),
+  getRoutes: (id: number) => api.get<UpstreamRoute[]>(`/upstreams/${id}/routes`),
+  addRoute: (id: number, data: { pattern: string; priority?: number }) =>
+    api.post<UpstreamRoute>(`/upstreams/${id}/routes`, data),
+  deleteRoute: (upstreamId: number, routeId: number) =>
+    api.delete(`/upstreams/${upstreamId}/routes/${routeId}`),
+  test: (data: TestUpstreamRequest) => api.post<TestUpstreamResponse>('/upstreams/test', data)
+}
+
 export default api

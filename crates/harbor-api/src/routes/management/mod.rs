@@ -10,6 +10,7 @@ mod cache;
 mod config;
 mod logs;
 mod types;
+mod upstreams;
 mod users;
 
 /// Create management API routes
@@ -20,4 +21,5 @@ pub fn routes() -> Router<AppState> {
         .merge(cache::routes())
         .merge(config::routes())
         .merge(logs::routes())
+        .merge(upstreams::routes())
 }

@@ -14,3 +14,8 @@ pub use repository::{CacheStats, Database};
 
 /// Re-export sqlx types for convenience
 pub use sqlx::SqlitePool;
+
+// Re-export upstream-related types for convenience
+pub use models::{
+    CacheIsolation, NewUpstream, NewUpstreamRoute, UpdateUpstream, Upstream, UpstreamRoute,
+};

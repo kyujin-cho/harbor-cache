@@ -193,6 +193,7 @@ impl CacheManager {
                 content_type: content_type.to_string(),
                 size,
                 storage_path,
+                upstream_id: None,
             })
             .await?;
 
@@ -251,6 +252,7 @@ impl CacheManager {
                 content_type: content_type.to_string(),
                 size: actual_size,
                 storage_path,
+                upstream_id: None,
             })
             .await?;
 
@@ -380,6 +382,7 @@ impl CacheManager {
                     content_type: content_type_owned,
                     size: actual_size,
                     storage_path,
+                    upstream_id: None,
                 })
                 .await?;
 

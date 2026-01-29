@@ -5,18 +5,23 @@
 Harbor Cache is a lightweight caching proxy for Harbor container registries. It sits between Docker clients and an upstream Harbor registry, transparently caching container images to reduce bandwidth and improve pull performance.
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
-│   Docker    │────▶│ Harbor Cache │────▶│ Upstream Harbor │
-│   Client    │◀────│    Proxy     │◀────│    Registry     │
-└─────────────┘     └──────────────┘     └─────────────────┘
-                           │
-                    ┌──────┴──────┐
+                                        ┌─────────────────────┐
+                                   ┌───▶│ Upstream Harbor #1  │
+                                   │    └─────────────────────┘
+┌─────────────┐     ┌──────────────┤    ┌─────────────────────┐
+│   Docker    │────▶│ Harbor Cache │───▶│ Upstream Harbor #2  │
+│   Client    │◀────│    Proxy     │    └─────────────────────┘
+└─────────────┘     └──────────────┤    ┌─────────────────────┐
+                           │       └───▶│ Upstream Harbor #N  │
+                    ┌──────┴──────┐     └─────────────────────┘
                     │             │
                ┌────▼────┐  ┌─────▼─────┐
                │  Cache  │  │  Database │
                │ Storage │  │  (SQLite) │
                └─────────┘  └───────────┘
 ```
+
+Harbor Cache supports multiple upstream registries with pattern-based routing.
 
 ## Design Principles
 
@@ -58,6 +63,7 @@ The main entry point containing:
 Core business logic including:
 - `CacheManager`: Orchestrates caching operations
 - `RegistryService`: Implements OCI Distribution operations
+- `UpstreamManager`: Manages multiple upstream registries with routing
 - Eviction policies (LRU, LFU, FIFO)
 - Background cleanup tasks
 
@@ -100,6 +106,8 @@ Database layer (SQLite):
 - User management
 - Configuration storage
 - Upload session tracking
+- Upstream registry configuration
+- Route pattern management
 
 ## Data Flow
 
@@ -224,3 +232,47 @@ Harbor Cache is designed as a single-instance service. For high availability:
 - HTTP/1.1 keep-alive connections
 - Range request support for partial downloads
 - Compression pass-through from upstream
+
+## Multi-Upstream Architecture
+
+Harbor Cache supports connecting to multiple upstream Harbor registries, enabling:
+
+### Use Cases
+
+1. **Multiple Projects**: Cache artifacts from different Harbor projects
+2. **Multiple Registries**: Connect to separate Harbor instances
+3. **Fallback Configuration**: Use different upstreams based on availability
+4. **Cache Isolation**: Optionally isolate cache per upstream
+
+### Routing System
+
+Requests are routed to upstreams based on:
+
+1. **Pattern Matching**: Glob patterns match repository paths
+   - `library/*` - matches all repos in the library project
+   - `team-a/**` - matches repos nested under team-a
+   - `production/nginx` - exact match
+
+2. **Priority**: Lower priority number = higher precedence
+
+3. **Default Fallback**: Requests not matching any pattern use the default upstream
+
+### Cache Isolation Modes
+
+| Mode | Description |
+|------|-------------|
+| Shared | Blobs are deduplicated across all upstreams (default) |
+| Isolated | Each upstream maintains a separate cache namespace |
+
+### Multi-Upstream Configuration
+
+Upstreams can be configured:
+1. **Via API**: Dynamic management through `/api/v1/upstreams`
+2. **Via Web UI**: Visual management in the Upstreams page
+
+### Health Monitoring
+
+Each upstream has:
+- Periodic health checks
+- Automatic failover when unhealthy
+- Per-upstream statistics

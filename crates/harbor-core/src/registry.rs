@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::cache::CacheManager;
 use crate::error::CoreError;
+use crate::upstream::UpstreamManager;
 
 // ==================== Input Validation ====================
 
@@ -74,15 +75,22 @@ fn validate_reference(reference: &str) -> Result<(), CoreError> {
 }
 
 /// Registry service handling OCI Distribution API operations
+///
+/// Supports two modes:
+/// - Single upstream mode: Uses a single HarborClient (legacy/simple mode)
+/// - Multi upstream mode: Uses UpstreamManager for route-based upstream selection
 pub struct RegistryService {
     cache: Arc<CacheManager>,
-    upstream: Arc<HarborClient>,
+    /// Single upstream client (legacy mode)
+    single_upstream: Option<Arc<HarborClient>>,
+    /// Multi-upstream manager (new mode)
+    upstream_manager: Option<Arc<UpstreamManager>>,
     db: Database,
     storage: Arc<dyn StorageBackend>,
 }
 
 impl RegistryService {
-    /// Create a new registry service
+    /// Create a new registry service with a single upstream (legacy mode)
     pub fn new(
         cache: Arc<CacheManager>,
         upstream: Arc<HarborClient>,
@@ -91,10 +99,57 @@ impl RegistryService {
     ) -> Self {
         Self {
             cache,
-            upstream,
+            single_upstream: Some(upstream),
+            upstream_manager: None,
             db,
             storage,
         }
+    }
+
+    /// Create a new registry service with multi-upstream support
+    pub fn with_upstream_manager(
+        cache: Arc<CacheManager>,
+        upstream_manager: Arc<UpstreamManager>,
+        db: Database,
+        storage: Arc<dyn StorageBackend>,
+    ) -> Self {
+        Self {
+            cache,
+            single_upstream: None,
+            upstream_manager: Some(upstream_manager),
+            db,
+            storage,
+        }
+    }
+
+    /// Get the upstream client for a given repository
+    fn get_upstream(&self, repository: &str) -> Option<Arc<HarborClient>> {
+        // If we have an upstream manager, use it for routing
+        if let Some(ref manager) = self.upstream_manager {
+            if let Some(info) = manager.find_upstream(repository) {
+                debug!(
+                    "Routed {} to upstream {} (reason: {:?})",
+                    repository, info.upstream.name, info.match_reason
+                );
+                return Some(info.client);
+            }
+            warn!("No upstream found for repository: {}", repository);
+            return None;
+        }
+
+        // Fall back to single upstream
+        self.single_upstream.clone()
+    }
+
+    /// Get the upstream ID for cache isolation (if applicable)
+    #[allow(dead_code)]
+    fn get_upstream_id_for_cache(&self, repository: &str) -> Option<i64> {
+        if let Some(ref manager) = self.upstream_manager
+            && let Some(info) = manager.find_upstream(repository)
+        {
+            return manager.get_cache_upstream_id(info.upstream.id);
+        }
+        None
     }
 
     // ==================== Manifest Operations ====================
@@ -134,8 +189,11 @@ impl RegistryService {
             repository, reference
         );
 
-        let (data, content_type, digest) = self
-            .upstream
+        let upstream = self
+            .get_upstream(repository)
+            .ok_or_else(|| CoreError::NotFound("No upstream configured".to_string()))?;
+
+        let (data, content_type, digest) = upstream
             .get_manifest(repository, reference)
             .await
             .map_err(|e| {
@@ -214,9 +272,13 @@ impl RegistryService {
         // Compute digest
         let digest = harbor_storage::backend::compute_sha256(&data);
 
+        // Get upstream
+        let upstream = self
+            .get_upstream(repository)
+            .ok_or_else(|| CoreError::NotFound("No upstream configured".to_string()))?;
+
         // Push to upstream first
-        let upstream_digest = self
-            .upstream
+        let upstream_digest = upstream
             .push_manifest(repository, reference, data.clone(), content_type)
             .await?;
 
@@ -267,8 +329,11 @@ impl RegistryService {
         // Cache miss - fetch from upstream with streaming
         info!("Cache miss for blob: {}, fetching from upstream", digest);
 
-        let (stream, size) = self
-            .upstream
+        let upstream = self
+            .get_upstream(repository)
+            .ok_or_else(|| CoreError::NotFound("No upstream configured".to_string()))?;
+
+        let (stream, size) = upstream
             .get_blob_stream(repository, digest)
             .await
             .map_err(|e| {
@@ -346,18 +411,18 @@ impl RegistryService {
         // Cache miss - fetch from upstream
         info!("Cache miss for blob: {}, fetching from upstream", digest);
 
+        let upstream = self
+            .get_upstream(repository)
+            .ok_or_else(|| CoreError::NotFound("No upstream configured".to_string()))?;
+
         #[allow(deprecated)]
-        let (data, _size) = self
-            .upstream
-            .get_blob(repository, digest)
-            .await
-            .map_err(|e| {
-                if matches!(e, harbor_proxy::ProxyError::NotFound(_)) {
-                    CoreError::NotFound(digest.to_string())
-                } else {
-                    CoreError::Proxy(e)
-                }
-            })?;
+        let (data, _size) = upstream.get_blob(repository, digest).await.map_err(|e| {
+            if matches!(e, harbor_proxy::ProxyError::NotFound(_)) {
+                CoreError::NotFound(digest.to_string())
+            } else {
+                CoreError::Proxy(e)
+            }
+        })?;
 
         // Store in cache
         self.cache
@@ -388,7 +453,12 @@ impl RegistryService {
         }
 
         // Check upstream with HEAD request only (no download)
-        match self.upstream.get_blob_size(repository, digest).await {
+        let upstream = match self.get_upstream(repository) {
+            Some(u) => u,
+            None => return Ok(None),
+        };
+
+        match upstream.get_blob_size(repository, digest).await {
             Ok((size, _content_type)) => {
                 // Optionally trigger background cache warm-up
                 // For now, just return the size without downloading
@@ -516,6 +586,11 @@ impl RegistryService {
         // Get the size
         let size = self.storage.size(digest).await?;
 
+        // Get upstream
+        let upstream = self
+            .get_upstream(repository)
+            .ok_or_else(|| CoreError::NotFound("No upstream configured".to_string()))?;
+
         // Stream the data for pushing to upstream (avoid buffering in memory)
         let storage_stream = self.storage.stream(digest).await?;
 
@@ -527,7 +602,7 @@ impl RegistryService {
             }));
 
         // Push to upstream with streaming
-        self.upstream
+        upstream
             .push_blob_stream(repository, digest, proxy_stream, size)
             .await?;
 
@@ -541,6 +616,7 @@ impl RegistryService {
                 content_type: "application/octet-stream".to_string(),
                 size: size as i64,
                 storage_path,
+                upstream_id: None,
             })
             .await?;
 
@@ -583,10 +659,16 @@ impl RegistryService {
             return Ok(true);
         }
 
+        // Get upstream for the source repository
+        let upstream = match self.get_upstream(from) {
+            Some(u) => u,
+            None => return Ok(false),
+        };
+
         // Check if it exists in upstream (from source)
-        if self.upstream.blob_exists(from, digest).await? {
+        if upstream.blob_exists(from, digest).await? {
             // Fetch from source and cache with streaming
-            let (proxy_stream, size) = self.upstream.get_blob_stream(from, digest).await?;
+            let (proxy_stream, size) = upstream.get_blob_stream(from, digest).await?;
 
             // Convert ProxyError stream to StorageError stream for caching
             use futures::StreamExt;
