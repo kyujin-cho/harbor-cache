@@ -17,9 +17,8 @@ use crate::state::AppState;
 
 use super::auth::RequireAdmin;
 use super::types::{
-    CreateUpstreamRequest, TestUpstreamRequest, TestUpstreamResponse,
-    UpdateUpstreamRequest, UpstreamHealthResponse, UpstreamResponse,
-    UpstreamRouteResponse,
+    CreateUpstreamRequest, TestUpstreamRequest, TestUpstreamResponse, UpdateUpstreamRequest,
+    UpstreamHealthResponse, UpstreamResponse, UpstreamRouteResponse,
 };
 
 // ==================== Input Validation ====================
@@ -51,9 +50,8 @@ fn validate_upstream_url(url_str: &str) -> Result<(), ApiError> {
     }
 
     // Parse the URL
-    let url = Url::parse(url_str).map_err(|e| {
-        ApiError::BadRequest(format!("Invalid URL format: {}", e))
-    })?;
+    let url = Url::parse(url_str)
+        .map_err(|e| ApiError::BadRequest(format!("Invalid URL format: {}", e)))?;
 
     // Only allow HTTP and HTTPS schemes
     match url.scheme() {
@@ -67,14 +65,14 @@ fn validate_upstream_url(url_str: &str) -> Result<(), ApiError> {
     }
 
     // Get the host
-    let host = url.host_str().ok_or_else(|| {
-        ApiError::BadRequest("URL must have a host".to_string())
-    })?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| ApiError::BadRequest("URL must have a host".to_string()))?;
 
     // Block localhost and loopback addresses
     if host == "localhost" || host == "127.0.0.1" || host == "::1" {
         return Err(ApiError::BadRequest(
-            "Localhost URLs are not allowed for security reasons".to_string()
+            "Localhost URLs are not allowed for security reasons".to_string(),
         ));
     }
 
@@ -86,17 +84,17 @@ fn validate_upstream_url(url_str: &str) -> Result<(), ApiError> {
         || lower_host.ends_with(".local")
     {
         return Err(ApiError::BadRequest(
-            "Internal hostnames are not allowed for security reasons".to_string()
+            "Internal hostnames are not allowed for security reasons".to_string(),
         ));
     }
 
     // Try to parse as IP address and block private/internal ranges
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if is_private_or_reserved_ip(&ip) {
-            return Err(ApiError::BadRequest(
-                "Private or reserved IP addresses are not allowed for security reasons".to_string()
-            ));
-        }
+    if let Ok(ip) = host.parse::<IpAddr>()
+        && is_private_or_reserved_ip(&ip)
+    {
+        return Err(ApiError::BadRequest(
+            "Private or reserved IP addresses are not allowed for security reasons".to_string(),
+        ));
     }
 
     Ok(())
@@ -112,7 +110,7 @@ fn is_private_or_reserved_ip(ip: &IpAddr) -> bool {
                 || ipv4.is_broadcast()            // 255.255.255.255
                 || ipv4.is_unspecified()          // 0.0.0.0
                 || ipv4.octets()[0] == 169        // Cloud metadata (169.254.169.254)
-                || ipv4.is_documentation()        // 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24
+                || ipv4.is_documentation() // 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24
         }
         IpAddr::V6(ipv6) => {
             ipv6.is_loopback()                    // ::1
@@ -133,7 +131,7 @@ fn is_private_or_reserved_ip(ip: &IpAddr) -> bool {
 fn validate_upstream_name(name: &str) -> Result<(), ApiError> {
     if name.len() < MIN_NAME_LENGTH {
         return Err(ApiError::BadRequest(
-            "Upstream name cannot be empty".to_string()
+            "Upstream name cannot be empty".to_string(),
         ));
     }
 
@@ -145,19 +143,23 @@ fn validate_upstream_name(name: &str) -> Result<(), ApiError> {
     }
 
     // Must contain only alphanumeric, dashes, and underscores
-    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         return Err(ApiError::BadRequest(
-            "Upstream name must contain only alphanumeric characters, dashes, and underscores".to_string()
+            "Upstream name must contain only alphanumeric characters, dashes, and underscores"
+                .to_string(),
         ));
     }
 
     // Must start with alphanumeric
-    if let Some(first) = name.chars().next() {
-        if !first.is_ascii_alphanumeric() {
-            return Err(ApiError::BadRequest(
-                "Upstream name must start with an alphanumeric character".to_string()
-            ));
-        }
+    if let Some(first) = name.chars().next()
+        && !first.is_ascii_alphanumeric()
+    {
+        return Err(ApiError::BadRequest(
+            "Upstream name must start with an alphanumeric character".to_string(),
+        ));
     }
 
     Ok(())
@@ -167,7 +169,7 @@ fn validate_upstream_name(name: &str) -> Result<(), ApiError> {
 fn validate_display_name(name: &str) -> Result<(), ApiError> {
     if name.is_empty() {
         return Err(ApiError::BadRequest(
-            "Display name cannot be empty".to_string()
+            "Display name cannot be empty".to_string(),
         ));
     }
 
@@ -182,7 +184,7 @@ fn validate_display_name(name: &str) -> Result<(), ApiError> {
     let lower = name.to_lowercase();
     if lower.contains("<script") || lower.contains("javascript:") || lower.contains("data:") {
         return Err(ApiError::BadRequest(
-            "Display name contains disallowed characters".to_string()
+            "Display name contains disallowed characters".to_string(),
         ));
     }
 
@@ -193,7 +195,7 @@ fn validate_display_name(name: &str) -> Result<(), ApiError> {
 fn validate_registry_name(registry: &str) -> Result<(), ApiError> {
     if registry.is_empty() {
         return Err(ApiError::BadRequest(
-            "Registry name cannot be empty".to_string()
+            "Registry name cannot be empty".to_string(),
         ));
     }
 
@@ -211,7 +213,7 @@ fn validate_registry_name(registry: &str) -> Result<(), ApiError> {
 fn validate_route_pattern(pattern: &str) -> Result<(), ApiError> {
     if pattern.is_empty() {
         return Err(ApiError::BadRequest(
-            "Route pattern cannot be empty".to_string()
+            "Route pattern cannot be empty".to_string(),
         ));
     }
 
@@ -234,7 +236,7 @@ fn validate_route_pattern(pattern: &str) -> Result<(), ApiError> {
     // Block path traversal attempts
     if pattern.contains("..") {
         return Err(ApiError::BadRequest(
-            "Route pattern cannot contain path traversal sequences".to_string()
+            "Route pattern cannot contain path traversal sequences".to_string(),
         ));
     }
 
@@ -281,10 +283,7 @@ async fn list_upstreams(
     let upstreams = state.db.list_upstreams().await?;
 
     Ok(Json(
-        upstreams
-            .into_iter()
-            .map(upstream_to_response)
-            .collect(),
+        upstreams.into_iter().map(upstream_to_response).collect(),
     ))
 }
 
@@ -308,7 +307,12 @@ async fn create_upstream(
     }
 
     // Check for duplicate name
-    if state.db.get_upstream_by_name(&request.name).await?.is_some() {
+    if state
+        .db
+        .get_upstream_by_name(&request.name)
+        .await?
+        .is_some()
+    {
         return Err(ApiError::BadRequest(format!(
             "Upstream with name '{}' already exists",
             request.name

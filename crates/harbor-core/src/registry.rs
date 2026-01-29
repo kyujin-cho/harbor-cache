@@ -142,11 +142,12 @@ impl RegistryService {
     }
 
     /// Get the upstream ID for cache isolation (if applicable)
+    #[allow(dead_code)]
     fn get_upstream_id_for_cache(&self, repository: &str) -> Option<i64> {
-        if let Some(ref manager) = self.upstream_manager {
-            if let Some(info) = manager.find_upstream(repository) {
-                return manager.get_cache_upstream_id(info.upstream.id);
-            }
+        if let Some(ref manager) = self.upstream_manager
+            && let Some(info) = manager.find_upstream(repository)
+        {
+            return manager.get_cache_upstream_id(info.upstream.id);
         }
         None
     }
@@ -415,16 +416,13 @@ impl RegistryService {
             .ok_or_else(|| CoreError::NotFound("No upstream configured".to_string()))?;
 
         #[allow(deprecated)]
-        let (data, _size) = upstream
-            .get_blob(repository, digest)
-            .await
-            .map_err(|e| {
-                if matches!(e, harbor_proxy::ProxyError::NotFound(_)) {
-                    CoreError::NotFound(digest.to_string())
-                } else {
-                    CoreError::Proxy(e)
-                }
-            })?;
+        let (data, _size) = upstream.get_blob(repository, digest).await.map_err(|e| {
+            if matches!(e, harbor_proxy::ProxyError::NotFound(_)) {
+                CoreError::NotFound(digest.to_string())
+            } else {
+                CoreError::Proxy(e)
+            }
+        })?;
 
         // Store in cache
         self.cache

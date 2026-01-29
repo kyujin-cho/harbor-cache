@@ -203,17 +203,13 @@ pub struct NewActivityLog {
 /// Cache isolation mode for upstreams
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum CacheIsolation {
     /// Share cache across all upstreams (deduplicate by digest)
+    #[default]
     Shared,
     /// Isolate cache per upstream
     Isolated,
-}
-
-impl Default for CacheIsolation {
-    fn default() -> Self {
-        CacheIsolation::Shared
-    }
 }
 
 impl CacheIsolation {

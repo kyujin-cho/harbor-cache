@@ -4,9 +4,7 @@ use chrono::Utc;
 use sqlx::Row;
 
 use crate::error::DbError;
-use crate::models::{
-    NewUpstream, NewUpstreamRoute, UpdateUpstream, Upstream, UpstreamRoute,
-};
+use crate::models::{NewUpstream, NewUpstreamRoute, UpdateUpstream, Upstream, UpstreamRoute};
 use crate::repository::Database;
 
 impl Database {
@@ -335,7 +333,10 @@ impl Database {
     }
 
     /// Get routes for an upstream
-    pub async fn get_upstream_routes(&self, upstream_id: i64) -> Result<Vec<UpstreamRoute>, DbError> {
+    pub async fn get_upstream_routes(
+        &self,
+        upstream_id: i64,
+    ) -> Result<Vec<UpstreamRoute>, DbError> {
         let rows = sqlx::query(
             r#"
             SELECT id, upstream_id, pattern, priority, created_at

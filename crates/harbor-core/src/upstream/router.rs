@@ -150,7 +150,13 @@ impl RouteMatcher {
         match &parts[part_idx] {
             PatternPart::Literal(lit) => {
                 if path_remaining.starts_with(lit) {
-                    Self::match_recursive(parts, path, part_idx + 1, path_pos + lit.len(), iterations)
+                    Self::match_recursive(
+                        parts,
+                        path,
+                        part_idx + 1,
+                        path_pos + lit.len(),
+                        iterations,
+                    )
                 } else {
                     false
                 }
@@ -159,7 +165,13 @@ impl RouteMatcher {
                 // Match any characters until the next '/' or end
                 if let Some(slash_pos) = path_remaining.find('/') {
                     // There's a slash, wildcard matches up to it
-                    Self::match_recursive(parts, path, part_idx + 1, path_pos + slash_pos, iterations)
+                    Self::match_recursive(
+                        parts,
+                        path,
+                        part_idx + 1,
+                        path_pos + slash_pos,
+                        iterations,
+                    )
                 } else {
                     // No slash, wildcard matches to end
                     Self::match_recursive(parts, path, part_idx + 1, path.len(), iterations)
@@ -204,9 +216,7 @@ mod tests {
 
     #[test]
     fn test_exact_match() {
-        let matcher = RouteMatcher::new(vec![
-            make_route(1, "library/nginx", 100),
-        ]);
+        let matcher = RouteMatcher::new(vec![make_route(1, "library/nginx", 100)]);
 
         let result = matcher.find_match("library/nginx");
         assert!(result.is_some());
@@ -217,9 +227,7 @@ mod tests {
 
     #[test]
     fn test_single_wildcard() {
-        let matcher = RouteMatcher::new(vec![
-            make_route(1, "library/*", 100),
-        ]);
+        let matcher = RouteMatcher::new(vec![make_route(1, "library/*", 100)]);
 
         let result = matcher.find_match("library/nginx");
         assert!(result.is_some());
@@ -234,9 +242,7 @@ mod tests {
 
     #[test]
     fn test_multi_wildcard() {
-        let matcher = RouteMatcher::new(vec![
-            make_route(1, "team-a/**", 100),
-        ]);
+        let matcher = RouteMatcher::new(vec![make_route(1, "team-a/**", 100)]);
 
         let result = matcher.find_match("team-a/project/image");
         assert!(result.is_some());

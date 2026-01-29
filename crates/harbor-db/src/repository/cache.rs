@@ -210,13 +210,12 @@ impl Database {
         .await?
         .get("total");
 
-        let entry_count: i64 = sqlx::query(
-            "SELECT COUNT(*) as count FROM cache_entries WHERE upstream_id = ?",
-        )
-        .bind(upstream_id)
-        .fetch_one(&self.pool)
-        .await?
-        .get("count");
+        let entry_count: i64 =
+            sqlx::query("SELECT COUNT(*) as count FROM cache_entries WHERE upstream_id = ?")
+                .bind(upstream_id)
+                .fetch_one(&self.pool)
+                .await?
+                .get("count");
 
         let manifest_count: i64 = sqlx::query(
             "SELECT COUNT(*) as count FROM cache_entries WHERE entry_type = 'manifest' AND upstream_id = ?",

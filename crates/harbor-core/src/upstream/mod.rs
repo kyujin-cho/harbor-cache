@@ -9,5 +9,5 @@
 mod manager;
 mod router;
 
-pub use manager::{UpstreamInfo, UpstreamManager, UpstreamHealth};
+pub use manager::{UpstreamHealth, UpstreamInfo, UpstreamManager};
 pub use router::RouteMatch;

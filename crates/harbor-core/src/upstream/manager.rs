@@ -137,7 +137,10 @@ impl UpstreamManager {
                     );
                 }
                 Err(e) => {
-                    error!("Failed to create client for upstream {}: {}", upstream.name, e);
+                    error!(
+                        "Failed to create client for upstream {}: {}",
+                        upstream.name, e
+                    );
                 }
             }
         }
@@ -181,31 +184,30 @@ impl UpstreamManager {
 
         // First, try route matching
         let route_matcher = self.route_matcher.read();
-        if let Some(route_match) = route_matcher.find_match(repository) {
-            if let Some(state) = upstreams.get(&route_match.upstream_id) {
-                if state.health.healthy || state.health.consecutive_failures < 3 {
-                    return Some(UpstreamInfo {
-                        upstream: state.upstream.clone(),
-                        client: state.client.clone(),
-                        match_reason: MatchReason::RouteMatch {
-                            pattern: route_match.pattern,
-                            priority: route_match.priority,
-                        },
-                    });
-                }
-            }
+        if let Some(route_match) = route_matcher.find_match(repository)
+            && let Some(state) = upstreams.get(&route_match.upstream_id)
+            && (state.health.healthy || state.health.consecutive_failures < 3)
+        {
+            return Some(UpstreamInfo {
+                upstream: state.upstream.clone(),
+                client: state.client.clone(),
+                match_reason: MatchReason::RouteMatch {
+                    pattern: route_match.pattern,
+                    priority: route_match.priority,
+                },
+            });
         }
 
         // Fall back to default upstream
         let default_id = *self.default_upstream_id.read();
-        if let Some(id) = default_id {
-            if let Some(state) = upstreams.get(&id) {
-                return Some(UpstreamInfo {
-                    upstream: state.upstream.clone(),
-                    client: state.client.clone(),
-                    match_reason: MatchReason::DefaultFallback,
-                });
-            }
+        if let Some(id) = default_id
+            && let Some(state) = upstreams.get(&id)
+        {
+            return Some(UpstreamInfo {
+                upstream: state.upstream.clone(),
+                client: state.client.clone(),
+                match_reason: MatchReason::DefaultFallback,
+            });
         }
 
         // If no default, try first available healthy upstream
