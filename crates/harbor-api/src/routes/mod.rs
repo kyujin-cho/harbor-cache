@@ -5,18 +5,44 @@ mod management;
 pub mod metrics;
 mod registry;
 
-use axum::Router;
-use axum::extract::DefaultBodyLimit;
+use axum::{
+    Router,
+    extract::DefaultBodyLimit,
+    http::{StatusCode, Uri, header},
+    response::{Html, IntoResponse, Response},
+};
+use rust_embed::Embed;
 use std::sync::Arc;
-use tower_http::services::{ServeDir, ServeFile};
 
 use crate::state::{AppState, MetricsHandle};
 
+/// Embedded static files from the frontend build
+#[derive(Embed)]
+#[folder = "$CARGO_MANIFEST_DIR/../../static"]
+struct Assets;
+
+/// Handler for serving embedded static files
+async fn serve_embedded_file(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+
+    // Try to get the exact file
+    if let Some(content) = <Assets as Embed>::get(path) {
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        (
+            [(header::CONTENT_TYPE, mime.as_ref())],
+            content.data.into_owned(),
+        )
+            .into_response()
+    } else if let Some(content) = <Assets as Embed>::get("index.html") {
+        // SPA fallback: serve index.html for any unmatched route
+        Html(content.data.into_owned()).into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
+}
+
 /// Create the main router
 pub fn create_router(state: AppState, metrics_handle: Option<Arc<MetricsHandle>>) -> Router {
-    // Create static file service with SPA fallback
-    let serve_dir = ServeDir::new("static").not_found_service(ServeFile::new("static/index.html"));
-
     let mut router = Router::new()
         // Health check
         .merge(health::routes())
@@ -33,6 +59,6 @@ pub fn create_router(state: AppState, metrics_handle: Option<Arc<MetricsHandle>>
         router = router.merge(metrics::routes(handle));
     }
 
-    // Serve static files (SPA) - must be last to not interfere with API routes
-    router.fallback_service(serve_dir)
+    // Serve embedded static files (SPA) - must be last to not interfere with API routes
+    router.fallback(serve_embedded_file)
 }

@@ -24,3 +24,5 @@ futures.workspace = true
 async-trait.workspace = true
 metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
+rust-embed.workspace = true
+mime_guess.workspace = true
