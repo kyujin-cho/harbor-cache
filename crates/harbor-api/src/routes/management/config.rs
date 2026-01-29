@@ -40,7 +40,9 @@ fn validate_config_path(path: &str) -> Result<std::path::PathBuf, ApiError> {
 
     // Check that the file has a .toml extension
     if path_obj.extension().and_then(|e| e.to_str()) != Some("toml") {
-        return Err(ApiError::BadRequest("Config file must have .toml extension".to_string()));
+        return Err(ApiError::BadRequest(
+            "Config file must have .toml extension".to_string(),
+        ));
     }
 
     // Try to canonicalize the parent directory (it must exist)
@@ -49,7 +51,9 @@ fn validate_config_path(path: &str) -> Result<std::path::PathBuf, ApiError> {
             match parent.canonicalize() {
                 Ok(_) => {}
                 Err(_) => {
-                    return Err(ApiError::BadRequest("Config file parent directory does not exist".to_string()));
+                    return Err(ApiError::BadRequest(
+                        "Config file parent directory does not exist".to_string(),
+                    ));
                 }
             }
         }
@@ -68,7 +72,10 @@ fn validate_config_semantics(content: &toml::Value) -> Result<(), String> {
         if let Some(port) = server.get("port") {
             if let Some(port_num) = port.as_integer() {
                 if port_num < 1 || port_num > 65535 {
-                    return Err(format!("server.port must be between 1 and 65535, got {}", port_num));
+                    return Err(format!(
+                        "server.port must be between 1 and 65535, got {}",
+                        port_num
+                    ));
                 }
             }
         }
@@ -614,9 +621,7 @@ async fn delete_config_key(
 }
 
 /// GET /api/v1/config/schema (Admin only)
-async fn get_config_schema(
-    _admin: RequireAdmin,
-) -> Result<Json<ConfigSchemaResponse>, ApiError> {
+async fn get_config_schema(_admin: RequireAdmin) -> Result<Json<ConfigSchemaResponse>, ApiError> {
     Ok(Json(build_config_schema()))
 }
 

@@ -122,7 +122,10 @@ impl Database {
         };
 
         // Get total count
-        let count_sql = format!("SELECT COUNT(*) as count FROM activity_logs {}", where_clause);
+        let count_sql = format!(
+            "SELECT COUNT(*) as count FROM activity_logs {}",
+            where_clause
+        );
         let mut count_query = sqlx::query(&count_sql);
         for param in &params {
             count_query = count_query.bind(param);

@@ -178,7 +178,8 @@ pub struct CacheStats {
 }
 
 /// Allowed sort fields for cache entries (whitelist to prevent SQL injection)
-const ALLOWED_CACHE_SORT_FIELDS: &[&str] = &["last_accessed_at", "created_at", "size", "access_count"];
+const ALLOWED_CACHE_SORT_FIELDS: &[&str] =
+    &["last_accessed_at", "created_at", "size", "access_count"];
 
 /// Query parameters for listing cache entries
 #[derive(Debug, Clone, Default)]
@@ -264,7 +265,10 @@ impl Database {
         };
 
         // Get total count
-        let count_sql = format!("SELECT COUNT(*) as count FROM cache_entries {}", where_clause);
+        let count_sql = format!(
+            "SELECT COUNT(*) as count FROM cache_entries {}",
+            where_clause
+        );
         let mut count_query = sqlx::query(&count_sql);
         for param in &params {
             count_query = count_query.bind(param);
