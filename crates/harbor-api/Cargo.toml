@@ -26,3 +26,4 @@ metrics.workspace = true
 metrics-exporter-prometheus.workspace = true
 rust-embed.workspace = true
 mime_guess.workspace = true
+toml.workspace = true

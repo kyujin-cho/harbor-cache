@@ -169,6 +169,32 @@ pub struct NewUploadSession {
     pub temp_path: String,
 }
 
+/// Activity log entry
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityLog {
+    pub id: i64,
+    pub timestamp: DateTime<Utc>,
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: Option<String>,
+    pub user_id: Option<i64>,
+    pub username: Option<String>,
+    pub details: Option<String>,
+    pub ip_address: Option<String>,
+}
+
+/// New activity log entry (for insertion)
+#[derive(Debug, Clone)]
+pub struct NewActivityLog {
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: Option<String>,
+    pub user_id: Option<i64>,
+    pub username: Option<String>,
+    pub details: Option<String>,
+    pub ip_address: Option<String>,
+}
+
 // ==================== TryFrom Implementations ====================
 
 impl TryFrom<&sqlx::sqlite::SqliteRow> for CacheEntry {
@@ -231,6 +257,24 @@ impl TryFrom<&sqlx::sqlite::SqliteRow> for ConfigEntry {
             key: row.try_get("key")?,
             value: row.try_get("value")?,
             updated_at: parse_datetime_or_now(&row.try_get::<String, _>("updated_at")?),
+        })
+    }
+}
+
+impl TryFrom<&sqlx::sqlite::SqliteRow> for ActivityLog {
+    type Error = sqlx::Error;
+
+    fn try_from(row: &sqlx::sqlite::SqliteRow) -> Result<Self, Self::Error> {
+        Ok(ActivityLog {
+            id: row.try_get("id")?,
+            timestamp: parse_datetime_or_now(&row.try_get::<String, _>("timestamp")?),
+            action: row.try_get("action")?,
+            resource_type: row.try_get("resource_type")?,
+            resource_id: row.try_get("resource_id")?,
+            user_id: row.try_get("user_id")?,
+            username: row.try_get("username")?,
+            details: row.try_get("details")?,
+            ip_address: row.try_get("ip_address")?,
         })
     }
 }

@@ -176,3 +176,136 @@ pub struct CacheStats {
     #[serde(default)]
     pub miss_count: i64,
 }
+
+/// Query parameters for listing cache entries
+#[derive(Debug, Clone, Default)]
+pub struct CacheEntryQuery {
+    /// Filter by entry type
+    pub entry_type: Option<String>,
+    /// Filter by repository (partial match)
+    pub repository: Option<String>,
+    /// Filter by digest (partial match)
+    pub digest: Option<String>,
+    /// Pagination offset
+    pub offset: i64,
+    /// Pagination limit
+    pub limit: i64,
+    /// Sort field: "last_accessed_at", "created_at", "size", "access_count"
+    pub sort_by: Option<String>,
+    /// Sort direction: "asc" or "desc"
+    pub sort_order: Option<String>,
+}
+
+impl Database {
+    /// List cache entries with filtering and pagination
+    pub async fn list_cache_entries(
+        &self,
+        query: CacheEntryQuery,
+    ) -> Result<(Vec<CacheEntry>, i64), DbError> {
+        let mut conditions = Vec::new();
+        let mut params: Vec<String> = Vec::new();
+
+        if let Some(entry_type) = &query.entry_type {
+            conditions.push("entry_type = ?");
+            params.push(entry_type.clone());
+        }
+        if let Some(repository) = &query.repository {
+            conditions.push("repository LIKE ?");
+            params.push(format!("%{}%", repository));
+        }
+        if let Some(digest) = &query.digest {
+            conditions.push("digest LIKE ?");
+            params.push(format!("%{}%", digest));
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        // Get total count
+        let count_sql = format!("SELECT COUNT(*) as count FROM cache_entries {}", where_clause);
+        let mut count_query = sqlx::query(&count_sql);
+        for param in &params {
+            count_query = count_query.bind(param);
+        }
+        let count_row = count_query.fetch_one(&self.pool).await?;
+        let total: i64 = count_row.get("count");
+
+        // Determine sort order
+        let sort_field = match query.sort_by.as_deref() {
+            Some("created_at") => "created_at",
+            Some("size") => "size",
+            Some("access_count") => "access_count",
+            _ => "last_accessed_at",
+        };
+        let sort_dir = match query.sort_order.as_deref() {
+            Some("asc") => "ASC",
+            _ => "DESC",
+        };
+
+        // Get entries
+        let sql = format!(
+            r#"
+            SELECT id, entry_type, repository, reference, digest, content_type, size,
+                   created_at, last_accessed_at, access_count, storage_path
+            FROM cache_entries
+            {}
+            ORDER BY {} {}
+            LIMIT ? OFFSET ?
+            "#,
+            where_clause, sort_field, sort_dir
+        );
+
+        let mut entries_query = sqlx::query(&sql);
+        for param in &params {
+            entries_query = entries_query.bind(param);
+        }
+        entries_query = entries_query.bind(query.limit).bind(query.offset);
+
+        let rows = entries_query.fetch_all(&self.pool).await?;
+        let entries: Result<Vec<CacheEntry>, _> = rows
+            .iter()
+            .map(|row| CacheEntry::try_from(row).map_err(DbError::from))
+            .collect();
+
+        Ok((entries?, total))
+    }
+
+    /// Get top accessed cache entries
+    pub async fn get_top_accessed_entries(&self, limit: i64) -> Result<Vec<CacheEntry>, DbError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, entry_type, repository, reference, digest, content_type, size,
+                   created_at, last_accessed_at, access_count, storage_path
+            FROM cache_entries
+            ORDER BY access_count DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter()
+            .map(|row| CacheEntry::try_from(row).map_err(DbError::from))
+            .collect()
+    }
+
+    /// Get distinct repositories from cache entries
+    pub async fn get_cached_repositories(&self) -> Result<Vec<String>, DbError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT DISTINCT repository
+            FROM cache_entries
+            WHERE repository IS NOT NULL
+            ORDER BY repository
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.iter().map(|row| row.get("repository")).collect())
+    }
+}

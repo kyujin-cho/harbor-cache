@@ -6,13 +6,15 @@ use tracing::info;
 use crate::error::DbError;
 
 // Submodules
+mod activity_logs;
 mod cache;
 mod config;
 mod sessions;
 mod users;
 
-// Re-export CacheStats
-pub use cache::CacheStats;
+// Re-export CacheStats and CacheEntryQuery
+pub use activity_logs::ActivityLogQuery;
+pub use cache::{CacheEntryQuery, CacheStats};
 
 /// Database connection and operations
 #[derive(Clone)]
@@ -114,6 +116,40 @@ impl Database {
                 bytes_received INTEGER DEFAULT 0,
                 temp_path TEXT NOT NULL
             )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS activity_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                action TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                resource_id TEXT,
+                user_id INTEGER,
+                username TEXT,
+                details TEXT,
+                ip_address TEXT
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_activity_logs_timestamp ON activity_logs(timestamp)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_activity_logs_action ON activity_logs(action)
             "#,
         )
         .execute(&self.pool)
