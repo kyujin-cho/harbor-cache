@@ -861,7 +861,7 @@ dependencies = [
 
 [[package]]
 name = "harbor-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -885,7 +885,7 @@ dependencies = [
 
 [[package]]
 name = "harbor-auth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "axum",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "harbor-cache"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -931,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "harbor-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "chrono",
@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "harbor-db"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -963,7 +963,7 @@ dependencies = [
 
 [[package]]
 name = "harbor-proxy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -978,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "harbor-storage"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
