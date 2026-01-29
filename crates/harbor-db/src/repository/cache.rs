@@ -214,10 +214,10 @@ impl CacheEntryQuery {
             self.limit = 100;
         }
         // Validate sort_by against whitelist
-        if let Some(ref sort_by) = self.sort_by {
-            if !ALLOWED_CACHE_SORT_FIELDS.contains(&sort_by.as_str()) {
-                self.sort_by = None; // Reset to default
-            }
+        if let Some(ref sort_by) = self.sort_by
+            && !ALLOWED_CACHE_SORT_FIELDS.contains(&sort_by.as_str())
+        {
+            self.sort_by = None; // Reset to default
         }
         // Validate sort_order
         if let Some(ref sort_order) = self.sort_order {
