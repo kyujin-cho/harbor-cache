@@ -330,10 +330,7 @@ async fn handle_get_or_head_request(
                             .await
                         {
                             Ok(Some(presigned_url)) => {
-                                debug!(
-                                    "Redirecting blob {} to presigned S3 URL",
-                                    digest
-                                );
+                                debug!("Redirecting blob {} to presigned S3 URL", digest);
 
                                 // Validate that the presigned URL can be used as a header value
                                 // S3 presigned URLs may contain special characters that need validation
@@ -346,7 +343,8 @@ async fn handle_get_or_head_request(
                                             digest, e
                                         );
                                         // Fall through to streaming instead of panicking
-                                        let (stream, size) = state.registry.get_blob(&name, &digest).await?;
+                                        let (stream, size) =
+                                            state.registry.get_blob(&name, &digest).await?;
                                         let body = axum::body::Body::from_stream(stream);
                                         let mut response = (StatusCode::OK, body).into_response();
                                         let headers = response.headers_mut();
@@ -355,7 +353,10 @@ async fn handle_get_or_head_request(
                                             HeaderValue::from_static("application/octet-stream"),
                                         );
                                         if size > 0 {
-                                            headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+                                            headers.insert(
+                                                header::CONTENT_LENGTH,
+                                                HeaderValue::from(size),
+                                            );
                                         }
                                         headers.insert(
                                             "Docker-Content-Digest",
@@ -373,8 +374,7 @@ async fn handle_get_or_head_request(
 
                                 // Return HTTP 307 Temporary Redirect with presigned URL
                                 // OCI Distribution spec allows 307 redirects for blob downloads
-                                let mut response =
-                                    StatusCode::TEMPORARY_REDIRECT.into_response();
+                                let mut response = StatusCode::TEMPORARY_REDIRECT.into_response();
                                 let headers = response.headers_mut();
                                 headers.insert(header::LOCATION, location_header);
                                 // Docker-Content-Digest is required for redirect responses

@@ -474,11 +474,7 @@ impl StorageBackend for S3Storage {
         // Use the Signer trait to generate a presigned GET URL
         let url = self
             .store
-            .signed_url(
-                http::Method::GET,
-                &path,
-                Duration::from_secs(ttl_secs),
-            )
+            .signed_url(http::Method::GET, &path, Duration::from_secs(ttl_secs))
             .await
             .map_err(|e| StorageError::S3(format!("Failed to generate presigned URL: {}", e)))?;
 
