@@ -121,6 +121,15 @@ impl UpstreamManager {
                 continue;
             }
 
+            // Security: Validate upstream configuration before loading
+            if let Err(e) = upstream_config.validate() {
+                warn!(
+                    "Skipping upstream '{}' due to validation error: {}",
+                    upstream_config.name, e
+                );
+                continue;
+            }
+
             // Create the default client
             let default_project = upstream_config.get_default_project().to_string();
             match Self::create_client_for_project(&upstream_config, &default_project) {
@@ -258,39 +267,56 @@ impl UpstreamManager {
         // First, try route matching (upstream-level routes)
         let route_matcher = self.route_matcher.read();
         if let Some(route_match) = route_matcher.find_match(repository) {
-            // Find the upstream that has this route pattern
-            for state in upstreams.values() {
-                if state
-                    .config
-                    .routes
-                    .iter()
-                    .any(|r| r.pattern == route_match.pattern)
-                    && (state.health.healthy || state.health.consecutive_failures < 3)
-                {
-                    // For multi-project upstreams, find the matching project
-                    let (client, project) = self.get_client_and_project(state, repository);
-                    return Some(UpstreamInfo {
-                        config: state.config.clone(),
-                        client,
-                        match_reason: MatchReason::RouteMatch {
-                            pattern: route_match.pattern,
-                            priority: route_match.priority,
-                        },
-                        project,
-                    });
-                }
+            // Collect matching upstreams and sort by priority for deterministic order
+            let mut matching_states: Vec<_> = upstreams
+                .values()
+                .filter(|state| {
+                    state
+                        .config
+                        .routes
+                        .iter()
+                        .any(|r| r.pattern == route_match.pattern)
+                        && (state.health.healthy || state.health.consecutive_failures < 3)
+                })
+                .collect();
+
+            // Sort by upstream priority, then by name for deterministic behavior
+            matching_states.sort_by(|a, b| {
+                a.config
+                    .priority
+                    .cmp(&b.config.priority)
+                    .then_with(|| a.config.name.cmp(&b.config.name))
+            });
+
+            if let Some(state) = matching_states.first() {
+                // For multi-project upstreams, find the matching project
+                let (client, project) = self.get_client_and_project(state, repository);
+                return Some(UpstreamInfo {
+                    config: state.config.clone(),
+                    client,
+                    match_reason: MatchReason::RouteMatch {
+                        pattern: route_match.pattern.clone(),
+                        priority: route_match.priority,
+                    },
+                    project,
+                });
             }
         }
 
         // Second, try project-level pattern matching for multi-project upstreams
         // Sort upstreams by priority, then by project priority
-        let mut upstream_matches: Vec<_> = upstreams.values()
+        let mut upstream_matches: Vec<_> = upstreams
+            .values()
             .filter(|state| state.health.healthy || state.health.consecutive_failures < 3)
             .filter_map(|state| {
                 if state.config.uses_multi_project() {
                     // Find matching project for this upstream
-                    if let Some((project, pattern, priority)) = self.find_matching_project(&state.config, repository) {
-                        let client = state.project_clients.get(&project)
+                    if let Some((project, pattern, priority)) =
+                        self.find_matching_project(&state.config, repository)
+                    {
+                        let client = state
+                            .project_clients
+                            .get(&project)
                             .cloned()
                             .unwrap_or_else(|| state.default_client.clone());
                         return Some((state, client, project, pattern, priority));
@@ -300,10 +326,15 @@ impl UpstreamManager {
             })
             .collect();
 
-        // Sort by project priority (lower = higher priority)
-        upstream_matches.sort_by_key(|(_, _, _, _, priority)| *priority);
+        // Sort by project priority first, then upstream priority, then name for determinism
+        upstream_matches.sort_by(|a, b| {
+            a.4.cmp(&b.4)
+                .then_with(|| a.0.config.priority.cmp(&b.0.config.priority))
+                .then_with(|| a.0.config.name.cmp(&b.0.config.name))
+        });
 
-        if let Some((state, client, project, pattern, priority)) = upstream_matches.into_iter().next() {
+        if let Some((state, client, project, pattern, priority)) = upstream_matches.into_iter().next()
+        {
             return Some(UpstreamInfo {
                 config: state.config.clone(),
                 client,
@@ -330,17 +361,28 @@ impl UpstreamManager {
             });
         }
 
-        // If no default, try first available healthy upstream
-        for state in upstreams.values() {
-            if state.health.healthy || state.health.consecutive_failures < 3 {
-                let (client, project) = self.get_client_and_project(state, repository);
-                return Some(UpstreamInfo {
-                    config: state.config.clone(),
-                    client,
-                    match_reason: MatchReason::DefaultFallback,
-                    project,
-                });
-            }
+        // If no default, try first available healthy upstream (sorted for determinism)
+        let mut available: Vec<_> = upstreams
+            .values()
+            .filter(|state| state.health.healthy || state.health.consecutive_failures < 3)
+            .collect();
+
+        // Sort by priority, then name for deterministic fallback behavior
+        available.sort_by(|a, b| {
+            a.config
+                .priority
+                .cmp(&b.config.priority)
+                .then_with(|| a.config.name.cmp(&b.config.name))
+        });
+
+        if let Some(state) = available.first() {
+            let (client, project) = self.get_client_and_project(state, repository);
+            return Some(UpstreamInfo {
+                config: state.config.clone(),
+                client,
+                match_reason: MatchReason::DefaultFallback,
+                project,
+            });
         }
 
         None
