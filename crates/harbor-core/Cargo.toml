@@ -21,3 +21,4 @@ bytes.workspace = true
 futures.workspace = true
 uuid.workspace = true
 parking_lot = "0.12"
+anyhow.workspace = true

@@ -20,9 +20,10 @@ import {
 } from '@heroicons/vue/24/outline'
 
 const upstreams = ref<Upstream[]>([])
-const healthStatus = ref<Map<number, UpstreamHealth>>(new Map())
+const healthStatus = ref<Map<string, UpstreamHealth>>(new Map())
 const loading = ref(true)
 const error = ref('')
+const configPath = ref<string | null>(null)
 
 // Modal state
 const showModal = ref(false)
@@ -59,9 +60,17 @@ async function fetchUpstreams() {
     // Fetch health status for all upstreams
     try {
       const healthResponse = await upstreamsApi.getAllHealth()
-      healthStatus.value = new Map(healthResponse.data.map(h => [h.upstream_id, h]))
+      healthStatus.value = new Map(healthResponse.data.map(h => [h.name, h]))
     } catch (err) {
       console.error('Failed to fetch health status:', err)
+    }
+
+    // Fetch config path info
+    try {
+      const configResponse = await upstreamsApi.getConfigPath()
+      configPath.value = configResponse.data.path
+    } catch (err) {
+      console.error('Failed to fetch config path:', err)
     }
   } catch (err: any) {
     error.value = err.response?.data?.errors?.[0]?.message || 'Failed to fetch upstreams'
@@ -162,7 +171,8 @@ async function saveUpstream() {
       if (formData.value.password) {
         update.password = formData.value.password
       }
-      await upstreamsApi.update(editingUpstream.value.id, update)
+      // Use name instead of id
+      await upstreamsApi.update(editingUpstream.value.name, update)
     }
     closeModal()
     fetchUpstreams()
@@ -172,19 +182,20 @@ async function saveUpstream() {
 }
 
 async function deleteUpstream(upstream: Upstream) {
-  if (!confirm(`Are you sure you want to delete upstream "${upstream.display_name}"?`)) {
+  if (!confirm(`Are you sure you want to delete upstream "${upstream.display_name}"? This will update the config file.`)) {
     return
   }
   try {
-    await upstreamsApi.delete(upstream.id)
+    // Use name instead of id
+    await upstreamsApi.delete(upstream.name)
     fetchUpstreams()
   } catch (err: any) {
     error.value = err.response?.data?.errors?.[0]?.message || 'Failed to delete upstream'
   }
 }
 
-function getHealthClass(upstreamId: number): string {
-  const health = healthStatus.value.get(upstreamId)
+function getHealthClass(upstreamName: string): string {
+  const health = healthStatus.value.get(upstreamName)
   if (!health) return 'text-gray-400'
   return health.healthy ? 'text-green-500' : 'text-red-500'
 }
@@ -198,6 +209,9 @@ onMounted(fetchUpstreams)
       <div>
         <h1 class="text-2xl font-bold text-gray-900">Upstreams</h1>
         <p class="mt-1 text-sm text-gray-500">Manage upstream Harbor registries</p>
+        <p v-if="configPath" class="mt-1 text-xs text-blue-600">
+          Changes are persisted to: <code class="font-mono bg-blue-50 px-1 rounded">{{ configPath }}</code>
+        </p>
       </div>
       <div class="flex items-center gap-3">
         <button
@@ -259,9 +273,9 @@ onMounted(fetchUpstreams)
             </div>
           </div>
           <component
-            :is="healthStatus.get(upstream.id)?.healthy ? CheckCircleIcon : XCircleIcon"
+            :is="healthStatus.get(upstream.name)?.healthy ? CheckCircleIcon : XCircleIcon"
             class="h-5 w-5"
-            :class="getHealthClass(upstream.id)"
+            :class="getHealthClass(upstream.name)"
           />
         </div>
 

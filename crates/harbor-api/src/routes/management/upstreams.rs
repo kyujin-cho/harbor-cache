@@ -1,4 +1,7 @@
 //! Upstream management routes
+//!
+//! These endpoints manage upstream Harbor registries through the TOML config file.
+//! Changes are persisted to the config file and reloaded at runtime.
 
 use axum::{
     Json, Router,
@@ -6,10 +9,11 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, post, put},
 };
-use harbor_db::{CacheIsolation, NewUpstream, NewUpstreamRoute, UpdateUpstream};
+use harbor_core::{UpstreamConfig, UpstreamRouteConfig};
 use harbor_proxy::{HarborClient, HarborClientConfig};
-use std::net::IpAddr;
-use tracing::{debug, info};
+use std::net::{IpAddr, ToSocketAddrs};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::{debug, info, warn};
 use url::Url;
 
 use crate::error::ApiError;
@@ -20,6 +24,13 @@ use super::types::{
     CreateUpstreamRequest, TestUpstreamRequest, TestUpstreamResponse, UpdateUpstreamRequest,
     UpstreamHealthResponse, UpstreamResponse, UpstreamRouteResponse,
 };
+
+// ==================== Rate Limiting ====================
+
+/// Simple rate limiter for reload operations
+/// Allows at most one reload per RELOAD_COOLDOWN_SECS seconds
+static LAST_RELOAD_TIME: AtomicU64 = AtomicU64::new(0);
+const RELOAD_COOLDOWN_SECS: u64 = 5;
 
 // ==================== Input Validation ====================
 
@@ -95,6 +106,66 @@ fn validate_upstream_url(url_str: &str) -> Result<(), ApiError> {
         return Err(ApiError::BadRequest(
             "Private or reserved IP addresses are not allowed for security reasons".to_string(),
         ));
+    }
+
+    Ok(())
+}
+
+/// Validate upstream URL with DNS resolution to prevent DNS rebinding attacks.
+/// This performs actual DNS resolution to verify the hostname doesn't resolve to internal IPs.
+async fn validate_upstream_url_with_dns(url_str: &str) -> Result<(), ApiError> {
+    // First, perform basic validation
+    validate_upstream_url(url_str)?;
+
+    // Parse URL to get host and port
+    let url =
+        Url::parse(url_str).map_err(|e| ApiError::BadRequest(format!("Invalid URL: {}", e)))?;
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| ApiError::BadRequest("URL must have a host".to_string()))?;
+
+    // If it's already an IP, we already validated it above
+    if host.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+
+    // Resolve the hostname to IP addresses
+    let port = url
+        .port()
+        .unwrap_or(if url.scheme() == "https" { 443 } else { 80 });
+    let addr_str = format!("{}:{}", host, port);
+
+    // Use spawn_blocking for DNS resolution to avoid blocking the async runtime
+    let resolved = tokio::task::spawn_blocking(move || {
+        addr_str
+            .to_socket_addrs()
+            .map(|addrs| addrs.collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("DNS resolution task failed: {}", e)))?
+    .map_err(|e| ApiError::BadRequest(format!("Failed to resolve hostname '{}': {}", host, e)))?;
+
+    if resolved.is_empty() {
+        return Err(ApiError::BadRequest(format!(
+            "Hostname '{}' did not resolve to any IP addresses",
+            host
+        )));
+    }
+
+    // Check all resolved IPs - reject if ANY resolve to private/reserved ranges
+    for addr in &resolved {
+        if is_private_or_reserved_ip(&addr.ip()) {
+            warn!(
+                "DNS rebinding protection: hostname '{}' resolves to private IP {}",
+                host,
+                addr.ip()
+            );
+            return Err(ApiError::BadRequest(format!(
+                "Hostname '{}' resolves to a private or reserved IP address, which is not allowed for security reasons",
+                host
+            )));
+        }
     }
 
     Ok(())
@@ -245,49 +316,59 @@ fn validate_route_pattern(pattern: &str) -> Result<(), ApiError> {
 
 // ==================== Helper Functions ====================
 
-fn upstream_to_response(upstream: harbor_db::Upstream) -> UpstreamResponse {
+fn upstream_config_to_response(config: &UpstreamConfig, idx: usize) -> UpstreamResponse {
     UpstreamResponse {
-        id: upstream.id,
-        name: upstream.name,
-        display_name: upstream.display_name,
-        url: upstream.url,
-        registry: upstream.registry,
-        skip_tls_verify: upstream.skip_tls_verify,
-        priority: upstream.priority,
-        enabled: upstream.enabled,
-        cache_isolation: upstream.cache_isolation.as_str().to_string(),
-        is_default: upstream.is_default,
-        has_credentials: upstream.username.is_some(),
-        created_at: upstream.created_at.to_rfc3339(),
-        updated_at: upstream.updated_at.to_rfc3339(),
+        id: idx as i64, // Use index as ID for compatibility
+        name: config.name.clone(),
+        display_name: config.display_name().to_string(),
+        url: config.url.clone(),
+        registry: config.registry.clone(),
+        skip_tls_verify: config.skip_tls_verify,
+        priority: config.priority,
+        enabled: config.enabled,
+        cache_isolation: config.cache_isolation.clone(),
+        is_default: config.is_default,
+        has_credentials: config.username.is_some(),
+        created_at: chrono::Utc::now().to_rfc3339(), // Not tracked in config
+        updated_at: chrono::Utc::now().to_rfc3339(), // Not tracked in config
     }
 }
 
-fn route_to_response(route: harbor_db::UpstreamRoute) -> UpstreamRouteResponse {
+fn route_config_to_response(
+    route: &UpstreamRouteConfig,
+    _upstream_name: &str,
+    idx: usize,
+) -> UpstreamRouteResponse {
     UpstreamRouteResponse {
-        id: route.id,
-        upstream_id: route.upstream_id,
-        pattern: route.pattern,
+        id: idx as i64,
+        upstream_id: 0, // Not used with config-based storage
+        pattern: route.pattern.clone(),
         priority: route.priority,
-        created_at: route.created_at.to_rfc3339(),
+        created_at: chrono::Utc::now().to_rfc3339(),
     }
 }
 
 // ==================== Upstream Routes ====================
 
 /// GET /api/v1/upstreams (Admin only)
+/// Returns all upstreams from the TOML config file
 async fn list_upstreams(
     _admin: RequireAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<UpstreamResponse>>, ApiError> {
-    let upstreams = state.db.list_upstreams().await?;
+    let upstreams = state.config_provider.get_upstreams();
 
     Ok(Json(
-        upstreams.into_iter().map(upstream_to_response).collect(),
+        upstreams
+            .iter()
+            .enumerate()
+            .map(|(idx, u)| upstream_config_to_response(u, idx))
+            .collect(),
     ))
 }
 
 /// POST /api/v1/upstreams (Admin only)
+/// Creates a new upstream and saves to TOML config file
 async fn create_upstream(
     _admin: RequireAdmin,
     State(state): State<AppState>,
@@ -298,7 +379,8 @@ async fn create_upstream(
     // Validate all input fields
     validate_upstream_name(&request.name)?;
     validate_display_name(&request.display_name)?;
-    validate_upstream_url(&request.url)?;
+    // Use DNS-resolving validation to prevent DNS rebinding attacks
+    validate_upstream_url_with_dns(&request.url).await?;
     validate_registry_name(&request.registry)?;
 
     // Validate routes if provided
@@ -308,9 +390,8 @@ async fn create_upstream(
 
     // Check for duplicate name
     if state
-        .db
+        .config_provider
         .get_upstream_by_name(&request.name)
-        .await?
         .is_some()
     {
         return Err(ApiError::BadRequest(format!(
@@ -319,311 +400,338 @@ async fn create_upstream(
         )));
     }
 
-    // Parse cache isolation
-    let cache_isolation: CacheIsolation = request
-        .cache_isolation
-        .parse()
-        .unwrap_or(CacheIsolation::Shared);
-
-    // Create the upstream
-    let upstream = state
-        .db
-        .insert_upstream(NewUpstream {
-            name: request.name.clone(),
-            display_name: request.display_name,
-            url: request.url,
-            registry: request.registry,
-            username: request.username,
-            password: request.password,
-            skip_tls_verify: request.skip_tls_verify,
-            priority: request.priority,
-            enabled: request.enabled,
-            cache_isolation,
-            is_default: request.is_default,
+    // Create the upstream config
+    let routes: Vec<UpstreamRouteConfig> = request
+        .routes
+        .iter()
+        .map(|r| UpstreamRouteConfig {
+            pattern: r.pattern.clone(),
+            priority: r.priority,
         })
-        .await?;
+        .collect();
 
-    // Create routes if provided
-    for route in request.routes {
-        state
-            .db
-            .insert_upstream_route(NewUpstreamRoute {
-                upstream_id: upstream.id,
-                pattern: route.pattern,
-                priority: route.priority,
-            })
-            .await?;
-    }
+    let upstream_config = UpstreamConfig {
+        name: request.name.clone(),
+        display_name: Some(request.display_name),
+        url: request.url,
+        registry: request.registry,
+        username: request.username,
+        password: request.password,
+        skip_tls_verify: request.skip_tls_verify,
+        priority: request.priority,
+        enabled: request.enabled,
+        cache_isolation: request.cache_isolation,
+        is_default: request.is_default,
+        routes,
+    };
 
-    info!("Created upstream: {} (id: {})", request.name, upstream.id);
+    // Add to config and save
+    state
+        .config_provider
+        .add_upstream(upstream_config.clone())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    Ok((StatusCode::CREATED, Json(upstream_to_response(upstream))))
+    // Reload the upstream manager to pick up changes
+    state
+        .upstream_manager
+        .reload()
+        .map_err(|e| ApiError::Internal(format!("Failed to reload upstreams: {}", e)))?;
+
+    info!("Created upstream: {}", request.name);
+
+    let upstreams = state.config_provider.get_upstreams();
+    let idx = upstreams.len().saturating_sub(1);
+
+    Ok((
+        StatusCode::CREATED,
+        Json(upstream_config_to_response(&upstream_config, idx)),
+    ))
 }
 
-/// GET /api/v1/upstreams/:id (Admin only)
+/// GET /api/v1/upstreams/:name (Admin only)
+/// Gets an upstream by name from the TOML config file
 async fn get_upstream(
     _admin: RequireAdmin,
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(name): Path<String>,
 ) -> Result<Json<UpstreamResponse>, ApiError> {
-    let upstream = state
-        .db
-        .get_upstream(id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", id)))?;
+    let upstreams = state.config_provider.get_upstreams();
 
-    Ok(Json(upstream_to_response(upstream)))
+    let (idx, upstream) = upstreams
+        .iter()
+        .enumerate()
+        .find(|(_, u)| u.name == name)
+        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", name)))?;
+
+    Ok(Json(upstream_config_to_response(upstream, idx)))
 }
 
-/// PUT /api/v1/upstreams/:id (Admin only)
+/// PUT /api/v1/upstreams/:name (Admin only)
+/// Updates an upstream and saves to TOML config file
 async fn update_upstream(
     _admin: RequireAdmin,
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(name): Path<String>,
     Json(request): Json<UpdateUpstreamRequest>,
 ) -> Result<Json<UpstreamResponse>, ApiError> {
-    debug!("Updating upstream: {}", id);
+    debug!("Updating upstream: {}", name);
 
     // Validate updated fields if provided
     if let Some(ref display_name) = request.display_name {
         validate_display_name(display_name)?;
     }
     if let Some(ref url) = request.url {
-        validate_upstream_url(url)?;
+        // Use DNS-resolving validation to prevent DNS rebinding attacks
+        validate_upstream_url_with_dns(url).await?;
     }
     if let Some(ref registry) = request.registry {
         validate_registry_name(registry)?;
     }
 
-    // Verify upstream exists
-    let _upstream = state
-        .db
-        .get_upstream(id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", id)))?;
+    // Get existing upstream
+    let existing = state
+        .config_provider
+        .get_upstream_by_name(&name)
+        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", name)))?;
 
-    // Parse cache isolation if provided
-    let cache_isolation = request
-        .cache_isolation
-        .as_ref()
-        .map(|s| s.parse().unwrap_or(CacheIsolation::Shared));
-
-    // Build update
-    let update = UpdateUpstream {
-        display_name: request.display_name,
-        url: request.url,
-        registry: request.registry,
-        username: request.username.map(Some),
-        password: request.password.map(Some),
-        skip_tls_verify: request.skip_tls_verify,
-        priority: request.priority,
-        enabled: request.enabled,
-        cache_isolation,
-        is_default: request.is_default,
+    // Build updated config
+    let updated = UpstreamConfig {
+        name: existing.name.clone(),
+        display_name: request
+            .display_name
+            .or(existing.display_name.clone())
+            .or(Some(existing.name.clone())),
+        url: request.url.unwrap_or(existing.url),
+        registry: request.registry.unwrap_or(existing.registry),
+        username: request.username.or(existing.username),
+        password: request.password.or(existing.password),
+        skip_tls_verify: request.skip_tls_verify.unwrap_or(existing.skip_tls_verify),
+        priority: request.priority.unwrap_or(existing.priority),
+        enabled: request.enabled.unwrap_or(existing.enabled),
+        cache_isolation: request.cache_isolation.unwrap_or(existing.cache_isolation),
+        is_default: request.is_default.unwrap_or(existing.is_default),
+        routes: existing.routes, // Routes managed separately
     };
 
-    let upstream = state
-        .db
-        .update_upstream(id, update)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", id)))?;
+    // Update config and save
+    state
+        .config_provider
+        .update_upstream(&name, updated.clone())
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    info!("Updated upstream: {} (id: {})", upstream.name, id);
+    // Reload the upstream manager to pick up changes
+    state
+        .upstream_manager
+        .reload()
+        .map_err(|e| ApiError::Internal(format!("Failed to reload upstreams: {}", e)))?;
 
-    Ok(Json(upstream_to_response(upstream)))
+    info!("Updated upstream: {}", name);
+
+    let upstreams = state.config_provider.get_upstreams();
+    let idx = upstreams.iter().position(|u| u.name == name).unwrap_or(0);
+
+    Ok(Json(upstream_config_to_response(&updated, idx)))
 }
 
-/// DELETE /api/v1/upstreams/:id (Admin only)
+/// DELETE /api/v1/upstreams/:name (Admin only)
+/// Deletes an upstream from the TOML config file
 async fn delete_upstream(
     _admin: RequireAdmin,
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    debug!("Deleting upstream: {}", id);
+    debug!("Deleting upstream: {}", name);
 
-    let deleted = state.db.delete_upstream(id).await?;
+    // Remove from config and save
+    state.config_provider.remove_upstream(&name).map_err(|e| {
+        if e.to_string().contains("not found") {
+            ApiError::NotFound(format!("Upstream: {}", name))
+        } else {
+            ApiError::Internal(e.to_string())
+        }
+    })?;
 
-    if deleted {
-        info!("Deleted upstream: {}", id);
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err(ApiError::NotFound(format!("Upstream: {}", id)))
-    }
+    // Reload the upstream manager to pick up changes
+    state
+        .upstream_manager
+        .reload()
+        .map_err(|e| ApiError::Internal(format!("Failed to reload upstreams: {}", e)))?;
+
+    info!("Deleted upstream: {}", name);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ==================== Route Management ====================
 
-/// GET /api/v1/upstreams/:id/routes (Admin only)
+/// GET /api/v1/upstreams/:name/routes (Admin only)
 async fn list_upstream_routes(
     _admin: RequireAdmin,
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(name): Path<String>,
 ) -> Result<Json<Vec<UpstreamRouteResponse>>, ApiError> {
-    // Verify upstream exists
-    let _upstream = state
-        .db
-        .get_upstream(id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", id)))?;
+    let upstream = state
+        .config_provider
+        .get_upstream_by_name(&name)
+        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", name)))?;
 
-    let routes = state.db.get_upstream_routes(id).await?;
-
-    Ok(Json(routes.into_iter().map(route_to_response).collect()))
+    Ok(Json(
+        upstream
+            .routes
+            .iter()
+            .enumerate()
+            .map(|(idx, r)| route_config_to_response(r, &name, idx))
+            .collect(),
+    ))
 }
 
-/// POST /api/v1/upstreams/:id/routes (Admin only)
+/// POST /api/v1/upstreams/:name/routes (Admin only)
 async fn add_upstream_route(
     _admin: RequireAdmin,
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(name): Path<String>,
     Json(request): Json<super::types::CreateRouteRequest>,
 ) -> Result<(StatusCode, Json<UpstreamRouteResponse>), ApiError> {
-    debug!("Adding route to upstream {}: {}", id, request.pattern);
+    debug!("Adding route to upstream {}: {}", name, request.pattern);
 
     // Validate route pattern
     validate_route_pattern(&request.pattern)?;
 
-    // Verify upstream exists
-    let _upstream = state
-        .db
-        .get_upstream(id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", id)))?;
+    // Get existing upstream
+    let mut upstream = state
+        .config_provider
+        .get_upstream_by_name(&name)
+        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", name)))?;
 
-    let route = state
-        .db
-        .insert_upstream_route(NewUpstreamRoute {
-            upstream_id: id,
-            pattern: request.pattern.clone(),
-            priority: request.priority,
-        })
-        .await?;
+    // Add the new route
+    let route = UpstreamRouteConfig {
+        pattern: request.pattern.clone(),
+        priority: request.priority,
+    };
+    upstream.routes.push(route.clone());
 
-    info!("Added route {} to upstream {}", request.pattern, id);
+    // Update config and save
+    state
+        .config_provider
+        .update_upstream(&name, upstream)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    Ok((StatusCode::CREATED, Json(route_to_response(route))))
+    // Reload the upstream manager
+    state
+        .upstream_manager
+        .reload()
+        .map_err(|e| ApiError::Internal(format!("Failed to reload upstreams: {}", e)))?;
+
+    info!("Added route {} to upstream {}", request.pattern, name);
+
+    let updated = state.config_provider.get_upstream_by_name(&name).unwrap();
+    let idx = updated.routes.len().saturating_sub(1);
+
+    Ok((
+        StatusCode::CREATED,
+        Json(route_config_to_response(&route, &name, idx)),
+    ))
 }
 
-/// DELETE /api/v1/upstreams/:upstream_id/routes/:route_id (Admin only)
+/// DELETE /api/v1/upstreams/:upstream_name/routes/:route_idx (Admin only)
 async fn delete_upstream_route(
     _admin: RequireAdmin,
     State(state): State<AppState>,
-    Path((upstream_id, route_id)): Path<(i64, i64)>,
+    Path((upstream_name, route_idx)): Path<(String, usize)>,
 ) -> Result<StatusCode, ApiError> {
-    debug!("Deleting route {} from upstream {}", route_id, upstream_id);
+    debug!(
+        "Deleting route {} from upstream {}",
+        route_idx, upstream_name
+    );
 
-    // Verify upstream exists
-    let _upstream = state
-        .db
-        .get_upstream(upstream_id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", upstream_id)))?;
+    // Get existing upstream
+    let mut upstream = state
+        .config_provider
+        .get_upstream_by_name(&upstream_name)
+        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", upstream_name)))?;
 
-    let deleted = state.db.delete_upstream_route(route_id).await?;
-
-    if deleted {
-        info!("Deleted route {} from upstream {}", route_id, upstream_id);
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err(ApiError::NotFound(format!("Route: {}", route_id)))
+    // Check if route index is valid
+    if route_idx >= upstream.routes.len() {
+        return Err(ApiError::NotFound(format!("Route: {}", route_idx)));
     }
+
+    // Remove the route
+    upstream.routes.remove(route_idx);
+
+    // Update config and save
+    state
+        .config_provider
+        .update_upstream(&upstream_name, upstream)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    // Reload the upstream manager
+    state
+        .upstream_manager
+        .reload()
+        .map_err(|e| ApiError::Internal(format!("Failed to reload upstreams: {}", e)))?;
+
+    info!(
+        "Deleted route {} from upstream {}",
+        route_idx, upstream_name
+    );
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ==================== Health & Testing ====================
 
-/// GET /api/v1/upstreams/:id/health (Admin only)
+/// GET /api/v1/upstreams/:name/health (Admin only)
+///
+/// Uses the cached HarborClient from UpstreamManager for connection pooling efficiency.
 async fn get_upstream_health(
     _admin: RequireAdmin,
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(name): Path<String>,
 ) -> Result<Json<UpstreamHealthResponse>, ApiError> {
-    let upstream = state
-        .db
-        .get_upstream(id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", id)))?;
-
-    // Test connection
-    let config = HarborClientConfig {
-        url: upstream.url.clone(),
-        registry: upstream.registry.clone(),
-        username: upstream.username.clone(),
-        password: upstream.password.clone(),
-        skip_tls_verify: upstream.skip_tls_verify,
-    };
-
-    let (healthy, error) = match HarborClient::new(config) {
-        Ok(client) => match client.ping().await {
-            Ok(true) => (true, None),
-            Ok(false) => (false, Some("Ping returned false".to_string())),
-            Err(e) => (false, Some(e.to_string())),
-        },
-        Err(e) => (false, Some(e.to_string())),
-    };
+    // Use UpstreamManager's cached client for better connection pooling
+    let health = state
+        .upstream_manager
+        .check_upstream_health(&name)
+        .await
+        .map_err(|e| {
+            if e.to_string().contains("not found") || e.to_string().contains("NotFound") {
+                ApiError::NotFound(format!("Upstream: {}", name))
+            } else {
+                ApiError::Internal(e.to_string())
+            }
+        })?;
 
     Ok(Json(UpstreamHealthResponse {
-        upstream_id: id,
-        name: upstream.name,
-        healthy,
-        last_check: chrono::Utc::now().to_rfc3339(),
-        last_error: error,
-        consecutive_failures: if healthy { 0 } else { 1 },
+        upstream_id: 0, // Not used with config-based storage
+        name: health.name,
+        healthy: health.healthy,
+        last_check: health.last_check.to_rfc3339(),
+        last_error: health.last_error,
+        consecutive_failures: health.consecutive_failures,
     }))
 }
 
 /// GET /api/v1/upstreams/health (Admin only) - Get health for all upstreams
+///
+/// Uses UpstreamManager's cached clients for better connection pooling efficiency.
 async fn get_all_upstreams_health(
     _admin: RequireAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<UpstreamHealthResponse>>, ApiError> {
-    let upstreams = state.db.list_upstreams().await?;
+    // Use UpstreamManager's check_all_health which uses cached clients
+    let health_results = state.upstream_manager.check_all_health().await;
 
-    // Run health checks concurrently for better performance
-    let health_futures: Vec<_> = upstreams
+    let responses: Vec<UpstreamHealthResponse> = health_results
         .into_iter()
-        .map(|upstream| {
-            let config = HarborClientConfig {
-                url: upstream.url.clone(),
-                registry: upstream.registry.clone(),
-                username: upstream.username.clone(),
-                password: upstream.password.clone(),
-                skip_tls_verify: upstream.skip_tls_verify,
-            };
-
-            async move {
-                let (healthy, error) = match HarborClient::new(config) {
-                    Ok(client) => {
-                        // Add timeout for individual health check (10 seconds)
-                        match tokio::time::timeout(
-                            std::time::Duration::from_secs(10),
-                            client.ping(),
-                        )
-                        .await
-                        {
-                            Ok(Ok(true)) => (true, None),
-                            Ok(Ok(false)) => (false, Some("Ping returned false".to_string())),
-                            Ok(Err(e)) => (false, Some(e.to_string())),
-                            Err(_) => (false, Some("Health check timed out".to_string())),
-                        }
-                    }
-                    Err(e) => (false, Some(e.to_string())),
-                };
-
-                UpstreamHealthResponse {
-                    upstream_id: upstream.id,
-                    name: upstream.name,
-                    healthy,
-                    last_check: chrono::Utc::now().to_rfc3339(),
-                    last_error: error,
-                    consecutive_failures: if healthy { 0 } else { 1 },
-                }
-            }
+        .map(|health| UpstreamHealthResponse {
+            upstream_id: 0,
+            name: health.name,
+            healthy: health.healthy,
+            last_check: health.last_check.to_rfc3339(),
+            last_error: health.last_error,
+            consecutive_failures: health.consecutive_failures,
         })
         .collect();
 
-    let results = futures::future::join_all(health_futures).await;
-
-    Ok(Json(results))
+    Ok(Json(responses))
 }
 
 /// POST /api/v1/upstreams/test (Admin only) - Test connection without saving
@@ -633,8 +741,8 @@ async fn test_upstream_connection(
 ) -> Result<Json<TestUpstreamResponse>, ApiError> {
     debug!("Testing upstream connection: {}", request.url);
 
-    // Validate URL to prevent SSRF attacks
-    validate_upstream_url(&request.url)?;
+    // Validate URL to prevent SSRF attacks (with DNS resolution check)
+    validate_upstream_url_with_dns(&request.url).await?;
     validate_registry_name(&request.registry)?;
 
     let config = HarborClientConfig {
@@ -667,74 +775,113 @@ async fn test_upstream_connection(
     }
 }
 
-/// GET /api/v1/upstreams/:id/stats (Admin only) - Get cache statistics for an upstream
+/// GET /api/v1/upstreams/:name/stats (Admin only) - Get cache statistics for an upstream
 async fn get_upstream_stats(
     _admin: RequireAdmin,
     State(state): State<AppState>,
-    Path(id): Path<i64>,
+    Path(name): Path<String>,
 ) -> Result<Json<super::types::CacheStatsResponse>, ApiError> {
     // Verify upstream exists
     let _upstream = state
-        .db
-        .get_upstream(id)
-        .await?
-        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", id)))?;
+        .config_provider
+        .get_upstream_by_name(&name)
+        .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", name)))?;
 
-    let stats = state.db.get_cache_stats_by_upstream(id).await?;
-
+    // For now, return empty stats since we don't have upstream-specific stats in the new model
+    // TODO: Implement upstream-specific cache stats if needed
     Ok(Json(super::types::CacheStatsResponse {
-        total_size: stats.total_size,
-        total_size_human: format_size(stats.total_size as u64),
-        entry_count: stats.entry_count,
-        manifest_count: stats.manifest_count,
-        blob_count: stats.blob_count,
-        hit_count: stats.hit_count,
-        miss_count: stats.miss_count,
-        hit_rate: if stats.hit_count + stats.miss_count > 0 {
-            stats.hit_count as f64 / (stats.hit_count + stats.miss_count) as f64
-        } else {
-            0.0
-        },
+        total_size: 0,
+        total_size_human: "0 B".to_string(),
+        entry_count: 0,
+        manifest_count: 0,
+        blob_count: 0,
+        hit_count: 0,
+        miss_count: 0,
+        hit_rate: 0.0,
     }))
 }
 
-/// Format bytes as human-readable size
-fn format_size(bytes: u64) -> String {
-    const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-    let mut size = bytes as f64;
-    let mut unit_index = 0;
+/// POST /api/v1/upstreams/reload (Admin only) - Reload upstream configuration from file
+///
+/// Rate limited to prevent abuse - only one reload allowed per RELOAD_COOLDOWN_SECS seconds.
+async fn reload_upstreams(
+    _admin: RequireAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    debug!("Reloading upstream configuration");
 
-    while size >= 1024.0 && unit_index < UNITS.len() - 1 {
-        size /= 1024.0;
-        unit_index += 1;
+    // Rate limiting check using atomic timestamp
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let last_reload = LAST_RELOAD_TIME.load(Ordering::Relaxed);
+    if now - last_reload < RELOAD_COOLDOWN_SECS {
+        let wait_time = RELOAD_COOLDOWN_SECS - (now - last_reload);
+        return Err(ApiError::BadRequest(format!(
+            "Rate limit exceeded. Please wait {} seconds before reloading again.",
+            wait_time
+        )));
     }
 
-    if unit_index == 0 {
-        format!("{} {}", bytes, UNITS[0])
-    } else {
-        format!("{:.2} {}", size, UNITS[unit_index])
+    // Update the last reload time (simple CAS to handle concurrent requests)
+    if LAST_RELOAD_TIME
+        .compare_exchange(last_reload, now, Ordering::SeqCst, Ordering::Relaxed)
+        .is_err()
+    {
+        return Err(ApiError::BadRequest(
+            "Another reload operation is in progress. Please try again.".to_string(),
+        ));
     }
+
+    state
+        .upstream_manager
+        .reload()
+        .map_err(|e| ApiError::Internal(format!("Failed to reload upstreams: {}", e)))?;
+
+    info!("Upstream configuration reloaded");
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Upstream configuration reloaded successfully"
+    })))
+}
+
+/// GET /api/v1/upstreams/config-path (Admin only) - Get the config file path
+async fn get_config_path(
+    _admin: RequireAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let path = state.config_provider.get_config_path();
+
+    Ok(Json(serde_json::json!({
+        "path": path,
+        "message": "Changes to upstreams are saved to this config file"
+    })))
 }
 
 /// Create upstream management routes
 pub fn routes() -> Router<AppState> {
     Router::new()
-        // Upstream CRUD
+        // Upstream CRUD - use name as identifier instead of ID
         .route("/api/v1/upstreams", get(list_upstreams))
         .route("/api/v1/upstreams", post(create_upstream))
         .route("/api/v1/upstreams/health", get(get_all_upstreams_health))
         .route("/api/v1/upstreams/test", post(test_upstream_connection))
-        .route("/api/v1/upstreams/{id}", get(get_upstream))
-        .route("/api/v1/upstreams/{id}", put(update_upstream))
-        .route("/api/v1/upstreams/{id}", delete(delete_upstream))
+        .route("/api/v1/upstreams/reload", post(reload_upstreams))
+        .route("/api/v1/upstreams/config-path", get(get_config_path))
+        .route("/api/v1/upstreams/{name}", get(get_upstream))
+        .route("/api/v1/upstreams/{name}", put(update_upstream))
+        .route("/api/v1/upstreams/{name}", delete(delete_upstream))
         // Routes management
-        .route("/api/v1/upstreams/{id}/routes", get(list_upstream_routes))
-        .route("/api/v1/upstreams/{id}/routes", post(add_upstream_route))
+        .route("/api/v1/upstreams/{name}/routes", get(list_upstream_routes))
+        .route("/api/v1/upstreams/{name}/routes", post(add_upstream_route))
         .route(
-            "/api/v1/upstreams/{upstream_id}/routes/{route_id}",
+            "/api/v1/upstreams/{upstream_name}/routes/{route_idx}",
             delete(delete_upstream_route),
         )
         // Health & Stats
-        .route("/api/v1/upstreams/{id}/health", get(get_upstream_health))
-        .route("/api/v1/upstreams/{id}/stats", get(get_upstream_stats))
+        .route("/api/v1/upstreams/{name}/health", get(get_upstream_health))
+        .route("/api/v1/upstreams/{name}/stats", get(get_upstream_stats))
 }

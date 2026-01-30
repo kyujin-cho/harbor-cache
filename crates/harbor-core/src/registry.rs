@@ -129,7 +129,7 @@ impl RegistryService {
             if let Some(info) = manager.find_upstream(repository) {
                 debug!(
                     "Routed {} to upstream {} (reason: {:?})",
-                    repository, info.upstream.name, info.match_reason
+                    repository, info.config.name, info.match_reason
                 );
                 return Some(info.client);
             }
@@ -141,13 +141,13 @@ impl RegistryService {
         self.single_upstream.clone()
     }
 
-    /// Get the upstream ID for cache isolation (if applicable)
+    /// Get the upstream name for cache isolation (if applicable)
     #[allow(dead_code)]
-    fn get_upstream_id_for_cache(&self, repository: &str) -> Option<i64> {
+    fn get_upstream_name_for_cache(&self, repository: &str) -> Option<String> {
         if let Some(ref manager) = self.upstream_manager
             && let Some(info) = manager.find_upstream(repository)
         {
-            return manager.get_cache_upstream_id(info.upstream.id);
+            return manager.get_cache_upstream_name(&info.config.name);
         }
         None
     }

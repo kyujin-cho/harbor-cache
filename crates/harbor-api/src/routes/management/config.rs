@@ -627,17 +627,17 @@ async fn get_config_file(
     _admin: RequireAdmin,
     State(state): State<AppState>,
 ) -> Result<Json<ConfigFileResponse>, ApiError> {
-    let config_path = state
-        .config_path
-        .as_ref()
-        .ok_or_else(|| ApiError::BadRequest("Config path not available".to_string()))?;
-
-    let path = config_path.read().await;
+    let path = state.config_provider.get_config_path();
+    if path.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Config path not available".to_string(),
+        ));
+    }
 
     // Validate the path before reading
     validate_config_path(&path)?;
 
-    let content = tokio::fs::read_to_string(path.as_str())
+    let content = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to read config file: {}", e)))?;
 
@@ -668,10 +668,12 @@ async fn update_config_file(
         )));
     }
 
-    let config_path = state
-        .config_path
-        .as_ref()
-        .ok_or_else(|| ApiError::BadRequest("Config path not available".to_string()))?;
+    let path = state.config_provider.get_config_path();
+    if path.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Config path not available".to_string(),
+        ));
+    }
 
     // Validate TOML syntax
     let parsed_config = toml::from_str::<toml::Value>(&request.content)
@@ -681,14 +683,12 @@ async fn update_config_file(
     validate_config_semantics(&parsed_config)
         .map_err(|e| ApiError::BadRequest(format!("Invalid configuration: {}", e)))?;
 
-    let path = config_path.read().await;
-
     // Validate the path before writing
     validate_config_path(&path)?;
 
     info!("Updating config file: {}", path);
 
-    tokio::fs::write(path.as_str(), &request.content)
+    tokio::fs::write(&path, &request.content)
         .await
         .map_err(|e| ApiError::Internal(format!("Failed to write config file: {}", e)))?;
 
