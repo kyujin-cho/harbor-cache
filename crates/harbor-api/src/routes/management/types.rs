@@ -235,6 +235,21 @@ pub struct ActivityLogsQuery {
 
 // ==================== Upstream Types ====================
 
+/// Project configuration response
+#[derive(Serialize, Clone)]
+pub struct UpstreamProjectResponse {
+    /// Project/registry name in Harbor (e.g., "library", "team-a")
+    pub name: String,
+    /// Pattern to match repository paths for this project
+    pub pattern: Option<String>,
+    /// Effective pattern (computed if pattern is None)
+    pub effective_pattern: String,
+    /// Priority for this project route (lower = higher priority)
+    pub priority: i32,
+    /// Whether this is the default project for this upstream
+    pub is_default: bool,
+}
+
 /// Upstream response
 #[derive(Serialize)]
 pub struct UpstreamResponse {
@@ -242,7 +257,12 @@ pub struct UpstreamResponse {
     pub name: String,
     pub display_name: String,
     pub url: String,
+    /// Registry/project name (legacy single-project mode)
     pub registry: String,
+    /// Multiple projects configuration (multi-project mode)
+    pub projects: Vec<UpstreamProjectResponse>,
+    /// Whether this upstream uses multi-project mode
+    pub uses_multi_project: bool,
     pub skip_tls_verify: bool,
     pub priority: i32,
     pub enabled: bool,

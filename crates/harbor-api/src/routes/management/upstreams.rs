@@ -317,12 +317,29 @@ fn validate_route_pattern(pattern: &str) -> Result<(), ApiError> {
 // ==================== Helper Functions ====================
 
 fn upstream_config_to_response(config: &UpstreamConfig, idx: usize) -> UpstreamResponse {
+    let projects: Vec<super::types::UpstreamProjectResponse> = config
+        .projects
+        .iter()
+        .map(|p| {
+            let effective_pattern = p.pattern.clone().unwrap_or_else(|| format!("{}/*", p.name));
+            super::types::UpstreamProjectResponse {
+                name: p.name.clone(),
+                pattern: p.pattern.clone(),
+                effective_pattern,
+                priority: p.priority,
+                is_default: p.is_default,
+            }
+        })
+        .collect();
+
     UpstreamResponse {
         id: idx as i64, // Use index as ID for compatibility
         name: config.name.clone(),
         display_name: config.display_name().to_string(),
         url: config.url.clone(),
         registry: config.registry.clone(),
+        projects,
+        uses_multi_project: config.uses_multi_project(),
         skip_tls_verify: config.skip_tls_verify,
         priority: config.priority,
         enabled: config.enabled,
@@ -415,6 +432,7 @@ async fn create_upstream(
         display_name: Some(request.display_name),
         url: request.url,
         registry: request.registry,
+        projects: vec![], // Projects managed via config file or separate API
         username: request.username,
         password: request.password,
         skip_tls_verify: request.skip_tls_verify,
@@ -503,6 +521,7 @@ async fn update_upstream(
             .or(Some(existing.name.clone())),
         url: request.url.unwrap_or(existing.url),
         registry: request.registry.unwrap_or(existing.registry),
+        projects: existing.projects, // Projects managed via config file
         username: request.username.or(existing.username),
         password: request.password.or(existing.password),
         skip_tls_verify: request.skip_tls_verify.unwrap_or(existing.skip_tls_verify),

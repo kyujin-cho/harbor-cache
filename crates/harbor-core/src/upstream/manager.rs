@@ -39,6 +39,8 @@ pub struct UpstreamInfo {
     pub client: Arc<HarborClient>,
     /// How this upstream was selected
     pub match_reason: MatchReason,
+    /// The resolved project name (for multi-project upstreams)
+    pub project: String,
 }
 
 impl std::fmt::Debug for UpstreamInfo {
@@ -46,6 +48,7 @@ impl std::fmt::Debug for UpstreamInfo {
         f.debug_struct("UpstreamInfo")
             .field("config", &self.config)
             .field("match_reason", &self.match_reason)
+            .field("project", &self.project)
             .finish_non_exhaustive()
     }
 }
@@ -55,6 +58,12 @@ impl std::fmt::Debug for UpstreamInfo {
 pub enum MatchReason {
     /// Matched a specific route pattern
     RouteMatch { pattern: String, priority: i32 },
+    /// Matched a project pattern in multi-project mode
+    ProjectMatch {
+        project: String,
+        pattern: String,
+        priority: i32,
+    },
     /// Used as the default fallback
     DefaultFallback,
     /// Explicitly specified by name
@@ -64,7 +73,11 @@ pub enum MatchReason {
 /// Internal state for each upstream
 struct UpstreamState {
     config: UpstreamConfig,
-    client: Arc<HarborClient>,
+    /// Client for single-project mode (uses config.registry)
+    /// For multi-project mode, this is a "template" client for the default project
+    default_client: Arc<HarborClient>,
+    /// Cached clients for multi-project mode, keyed by project name
+    project_clients: HashMap<String, Arc<HarborClient>>,
     health: UpstreamHealth,
 }
 
@@ -112,8 +125,19 @@ impl UpstreamManager {
                 continue;
             }
 
-            match Self::create_client(&upstream_config) {
-                Ok(client) => {
+            // Security: Validate upstream configuration before loading
+            if let Err(e) = upstream_config.validate() {
+                warn!(
+                    "Skipping upstream '{}' due to validation error: {}",
+                    upstream_config.name, e
+                );
+                continue;
+            }
+
+            // Create the default client
+            let default_project = upstream_config.get_default_project().to_string();
+            match Self::create_client_for_project(&upstream_config, &default_project) {
+                Ok(default_client) => {
                     let health = UpstreamHealth {
                         upstream_name: upstream_config.name.clone(),
                         name: upstream_config.display_name().to_string(),
@@ -127,21 +151,50 @@ impl UpstreamManager {
                         default_name = Some(upstream_config.name.clone());
                     }
 
-                    // Collect routes
+                    // Collect routes from upstream-level routes
                     for route in &upstream_config.routes {
                         all_routes.push((upstream_config.name.clone(), route.clone()));
                     }
 
-                    info!(
-                        "Loaded upstream: {} -> {} (registry: {})",
-                        upstream_config.name, upstream_config.url, upstream_config.registry
-                    );
+                    // Create project clients for multi-project mode
+                    let mut project_clients = HashMap::new();
+                    if upstream_config.uses_multi_project() {
+                        for project in &upstream_config.projects {
+                            match Self::create_client_for_project(&upstream_config, &project.name) {
+                                Ok(client) => {
+                                    project_clients.insert(project.name.clone(), Arc::new(client));
+                                    debug!(
+                                        "Created client for project {} on upstream {}",
+                                        project.name, upstream_config.name
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to create client for project {} on upstream {}: {}",
+                                        project.name, upstream_config.name, e
+                                    );
+                                }
+                            }
+                        }
+                        info!(
+                            "Loaded upstream: {} -> {} (multi-project: {:?})",
+                            upstream_config.name,
+                            upstream_config.url,
+                            upstream_config.get_project_names()
+                        );
+                    } else {
+                        info!(
+                            "Loaded upstream: {} -> {} (registry: {})",
+                            upstream_config.name, upstream_config.url, upstream_config.registry
+                        );
+                    }
 
                     new_upstreams.insert(
                         upstream_config.name.clone(),
                         UpstreamState {
                             config: upstream_config,
-                            client: Arc::new(client),
+                            default_client: Arc::new(default_client),
+                            project_clients,
                             health,
                         },
                     );
@@ -188,11 +241,14 @@ impl UpstreamManager {
         Ok(())
     }
 
-    /// Create a HarborClient from an Upstream configuration
-    fn create_client(config: &UpstreamConfig) -> Result<HarborClient, CoreError> {
+    /// Create a HarborClient for a specific project on an upstream
+    fn create_client_for_project(
+        config: &UpstreamConfig,
+        project: &str,
+    ) -> Result<HarborClient, CoreError> {
         let client_config = HarborClientConfig {
             url: config.url.clone(),
-            registry: config.registry.clone(),
+            registry: project.to_string(),
             username: config.username.clone(),
             password: config.password.clone(),
             skip_tls_verify: config.skip_tls_verify,
@@ -201,32 +257,99 @@ impl UpstreamManager {
         HarborClient::new(client_config).map_err(CoreError::Proxy)
     }
 
+    /// Create a HarborClient from an Upstream configuration (uses default project)
+    #[allow(dead_code)]
+    fn create_client(config: &UpstreamConfig) -> Result<HarborClient, CoreError> {
+        let project = config.get_default_project();
+        Self::create_client_for_project(config, project)
+    }
+
     /// Find the appropriate upstream for a repository path
     pub fn find_upstream(&self, repository: &str) -> Option<UpstreamInfo> {
         let upstreams = self.upstreams.read();
 
-        // First, try route matching
+        // First, try route matching (upstream-level routes)
         let route_matcher = self.route_matcher.read();
         if let Some(route_match) = route_matcher.find_match(repository) {
-            // Find the upstream that has this route pattern
-            for state in upstreams.values() {
-                if state
-                    .config
-                    .routes
-                    .iter()
-                    .any(|r| r.pattern == route_match.pattern)
-                    && (state.health.healthy || state.health.consecutive_failures < 3)
-                {
-                    return Some(UpstreamInfo {
-                        config: state.config.clone(),
-                        client: state.client.clone(),
-                        match_reason: MatchReason::RouteMatch {
-                            pattern: route_match.pattern,
-                            priority: route_match.priority,
-                        },
-                    });
-                }
+            // Collect matching upstreams and sort by priority for deterministic order
+            let mut matching_states: Vec<_> = upstreams
+                .values()
+                .filter(|state| {
+                    state
+                        .config
+                        .routes
+                        .iter()
+                        .any(|r| r.pattern == route_match.pattern)
+                        && (state.health.healthy || state.health.consecutive_failures < 3)
+                })
+                .collect();
+
+            // Sort by upstream priority, then by name for deterministic behavior
+            matching_states.sort_by(|a, b| {
+                a.config
+                    .priority
+                    .cmp(&b.config.priority)
+                    .then_with(|| a.config.name.cmp(&b.config.name))
+            });
+
+            if let Some(state) = matching_states.first() {
+                // For multi-project upstreams, find the matching project
+                let (client, project) = self.get_client_and_project(state, repository);
+                return Some(UpstreamInfo {
+                    config: state.config.clone(),
+                    client,
+                    match_reason: MatchReason::RouteMatch {
+                        pattern: route_match.pattern.clone(),
+                        priority: route_match.priority,
+                    },
+                    project,
+                });
             }
+        }
+
+        // Second, try project-level pattern matching for multi-project upstreams
+        // Sort upstreams by priority, then by project priority
+        let mut upstream_matches: Vec<_> = upstreams
+            .values()
+            .filter(|state| state.health.healthy || state.health.consecutive_failures < 3)
+            .filter_map(|state| {
+                if state.config.uses_multi_project() {
+                    // Find matching project for this upstream
+                    if let Some((project, pattern, priority)) =
+                        self.find_matching_project(&state.config, repository)
+                    {
+                        let client = state
+                            .project_clients
+                            .get(&project)
+                            .cloned()
+                            .unwrap_or_else(|| state.default_client.clone());
+                        return Some((state, client, project, pattern, priority));
+                    }
+                }
+                None
+            })
+            .collect();
+
+        // Sort by project priority first, then upstream priority, then name for determinism
+        upstream_matches.sort_by(|a, b| {
+            a.4.cmp(&b.4)
+                .then_with(|| a.0.config.priority.cmp(&b.0.config.priority))
+                .then_with(|| a.0.config.name.cmp(&b.0.config.name))
+        });
+
+        if let Some((state, client, project, pattern, priority)) =
+            upstream_matches.into_iter().next()
+        {
+            return Some(UpstreamInfo {
+                config: state.config.clone(),
+                client,
+                match_reason: MatchReason::ProjectMatch {
+                    project: project.clone(),
+                    pattern,
+                    priority,
+                },
+                project,
+            });
         }
 
         // Fall back to default upstream
@@ -234,21 +357,79 @@ impl UpstreamManager {
         if let Some(name) = default_name
             && let Some(state) = upstreams.get(&name)
         {
+            let (client, project) = self.get_client_and_project(state, repository);
             return Some(UpstreamInfo {
                 config: state.config.clone(),
-                client: state.client.clone(),
+                client,
                 match_reason: MatchReason::DefaultFallback,
+                project,
             });
         }
 
-        // If no default, try first available healthy upstream
-        for state in upstreams.values() {
-            if state.health.healthy || state.health.consecutive_failures < 3 {
-                return Some(UpstreamInfo {
-                    config: state.config.clone(),
-                    client: state.client.clone(),
-                    match_reason: MatchReason::DefaultFallback,
-                });
+        // If no default, try first available healthy upstream (sorted for determinism)
+        let mut available: Vec<_> = upstreams
+            .values()
+            .filter(|state| state.health.healthy || state.health.consecutive_failures < 3)
+            .collect();
+
+        // Sort by priority, then name for deterministic fallback behavior
+        available.sort_by(|a, b| {
+            a.config
+                .priority
+                .cmp(&b.config.priority)
+                .then_with(|| a.config.name.cmp(&b.config.name))
+        });
+
+        if let Some(state) = available.first() {
+            let (client, project) = self.get_client_and_project(state, repository);
+            return Some(UpstreamInfo {
+                config: state.config.clone(),
+                client,
+                match_reason: MatchReason::DefaultFallback,
+                project,
+            });
+        }
+
+        None
+    }
+
+    /// Get the appropriate client and project for a given upstream state and repository
+    fn get_client_and_project(
+        &self,
+        state: &UpstreamState,
+        repository: &str,
+    ) -> (Arc<HarborClient>, String) {
+        if state.config.uses_multi_project()
+            && let Some(project) = state.config.find_matching_project(repository)
+            && let Some(client) = state.project_clients.get(project)
+        {
+            return (client.clone(), project.to_string());
+        }
+        // Fall back to default
+        (
+            state.default_client.clone(),
+            state.config.get_default_project().to_string(),
+        )
+    }
+
+    /// Find the matching project for a repository in multi-project mode
+    fn find_matching_project(
+        &self,
+        config: &UpstreamConfig,
+        repository: &str,
+    ) -> Option<(String, String, i32)> {
+        if !config.uses_multi_project() {
+            return None;
+        }
+
+        // Sort projects by priority and find the first match
+        let mut projects: Vec<_> = config.projects.iter().collect();
+        projects.sort_by_key(|p| p.priority);
+
+        for project in projects {
+            let pattern = project.effective_pattern();
+            if config.find_matching_project(repository) == Some(&project.name) {
+                return Some((project.name.clone(), pattern, project.priority));
             }
         }
 
@@ -259,10 +440,42 @@ impl UpstreamManager {
     pub fn get_upstream_by_name(&self, name: &str) -> Option<UpstreamInfo> {
         let upstreams = self.upstreams.read();
 
-        upstreams.get(name).map(|state| UpstreamInfo {
-            config: state.config.clone(),
-            client: state.client.clone(),
-            match_reason: MatchReason::ExplicitName(name.to_string()),
+        upstreams.get(name).map(|state| {
+            let project = state.config.get_default_project().to_string();
+            UpstreamInfo {
+                config: state.config.clone(),
+                client: state.default_client.clone(),
+                match_reason: MatchReason::ExplicitName(name.to_string()),
+                project,
+            }
+        })
+    }
+
+    /// Get an upstream by name with a specific project
+    pub fn get_upstream_by_name_and_project(
+        &self,
+        name: &str,
+        project: &str,
+    ) -> Option<UpstreamInfo> {
+        let upstreams = self.upstreams.read();
+
+        upstreams.get(name).and_then(|state| {
+            let client = state.project_clients.get(project).cloned().or_else(|| {
+                // If project matches the default/legacy registry, use default client
+                if project == state.config.registry || project == state.config.get_default_project()
+                {
+                    Some(state.default_client.clone())
+                } else {
+                    None
+                }
+            })?;
+
+            Some(UpstreamInfo {
+                config: state.config.clone(),
+                client,
+                match_reason: MatchReason::ExplicitName(name.to_string()),
+                project: project.to_string(),
+            })
         })
     }
 
@@ -270,6 +483,12 @@ impl UpstreamManager {
     pub fn get_default_upstream(&self) -> Option<UpstreamInfo> {
         let default_name = self.default_upstream_name.read().clone();
         default_name.and_then(|name| self.get_upstream_by_name(&name))
+    }
+
+    /// Get the default upstream with a specific project
+    pub fn get_default_upstream_for_project(&self, project: &str) -> Option<UpstreamInfo> {
+        let default_name = self.default_upstream_name.read().clone();
+        default_name.and_then(|name| self.get_upstream_by_name_and_project(&name, project))
     }
 
     /// List all upstreams
@@ -294,7 +513,7 @@ impl UpstreamManager {
     pub async fn check_upstream_health(&self, name: &str) -> Result<UpstreamHealth, CoreError> {
         let client = {
             let upstreams = self.upstreams.read();
-            upstreams.get(name).map(|s| s.client.clone())
+            upstreams.get(name).map(|s| s.default_client.clone())
         };
 
         let client = client.ok_or_else(|| CoreError::NotFound(format!("Upstream {}", name)))?;

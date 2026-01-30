@@ -15,7 +15,7 @@ eviction_policy = "lru"
 # ============================================================================
 # UPSTREAM CONFIGURATION
 # ============================================================================
-# You can configure upstreams in two ways:
+# You can configure upstreams in several ways:
 #
 # 1. Legacy single [upstream] format (for backwards compatibility):
 #    [upstream]
@@ -27,11 +27,16 @@ eviction_policy = "lru"
 # 2. New multi-upstream [[upstreams]] format (recommended):
 #    Supports multiple upstreams with route-based selection.
 #
-# If both are present, [[upstreams]] takes precedence.
+# 3. Multi-project mode (NEW):
+#    Access multiple projects from the same Harbor instance without
+#    duplicating connection settings. Use the [[upstreams.projects]] array
+#    instead of a single "registry" field.
+#
+# If both [upstream] and [[upstreams]] are present, [[upstreams]] takes precedence.
 # Legacy [upstream] is automatically migrated to [[upstreams]] at startup.
 # ============================================================================
 
-# Default upstream configuration
+# Default upstream configuration (single-project mode)
 [[upstreams]]
 name = "default"
 display_name = "Default Upstream"
@@ -51,7 +56,51 @@ is_default = true
 # pattern = "library/*"
 # priority = 100
 
-# Example: Add another upstream for team-specific images
+# ============================================================================
+# MULTI-PROJECT MODE EXAMPLE
+# ============================================================================
+# Instead of creating separate upstreams for each project on the same Harbor
+# instance, you can use multi-project mode. This reduces configuration
+# duplication and allows you to manage credentials in one place.
+#
+# When [[upstreams.projects]] is configured, the "registry" field becomes a
+# fallback for unmatched requests.
+# ============================================================================
+
+# Example: Multi-project upstream for accessing multiple projects
+# [[upstreams]]
+# name = "main-harbor"
+# display_name = "Main Harbor Registry"
+# url = "https://harbor.example.com"
+# registry = "library"  # Fallback for unmatched requests
+# username = "admin"
+# password = "secret"
+# skip_tls_verify = false
+# priority = 100
+# enabled = true
+# cache_isolation = "shared"
+# is_default = true
+#
+# # Project: library (default)
+# [[upstreams.projects]]
+# name = "library"
+# pattern = "library/*"  # Optional: defaults to "{name}/*"
+# priority = 100
+# is_default = true
+#
+# # Project: team-a
+# [[upstreams.projects]]
+# name = "team-a"
+# pattern = "team-a/*"
+# priority = 50
+#
+# # Project: team-b
+# [[upstreams.projects]]
+# name = "team-b"
+# pattern = "team-b/*"
+# priority = 50
+
+# Example: Add another upstream for team-specific images (single-project mode)
 # [[upstreams]]
 # name = "team-a"
 # display_name = "Team A Registry"

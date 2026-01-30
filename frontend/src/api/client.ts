@@ -207,12 +207,22 @@ export const logsApi = {
 }
 
 // Upstreams API
+export interface UpstreamProject {
+  name: string
+  pattern: string | null
+  effective_pattern: string
+  priority: number
+  is_default: boolean
+}
+
 export interface Upstream {
   id: number
   name: string
   display_name: string
   url: string
   registry: string
+  projects: UpstreamProject[]
+  uses_multi_project: boolean
   skip_tls_verify: boolean
   priority: number
   enabled: boolean
