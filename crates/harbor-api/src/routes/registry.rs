@@ -9,7 +9,7 @@ use axum::{
 };
 use bytes::Bytes;
 use serde::Deserialize;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -290,9 +290,11 @@ async fn handle_get_or_head_request(
             }
         }
         RegistryRequest::Blob { name, digest } => {
-            // Validate repository name at API boundary before logging or processing
-            // Digest validation is handled by the core layer
+            // Validate repository name and digest at API boundary before logging or processing
             validate_repository_name(&name)?;
+            // Validate digest format to prevent path traversal and ensure correctness
+            harbor_storage::backend::validate_digest(&digest)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid digest: {}", e)))?;
 
             if method == axum::http::Method::HEAD {
                 debug!("HEAD blob: {}", digest);
@@ -316,6 +318,95 @@ async fn handle_get_or_head_request(
                 }
             } else {
                 debug!("GET blob: {}", digest);
+
+                // Try to use presigned URL redirect if enabled and blob exists in cache
+                if state.blob_serving.enable_presigned_redirects {
+                    // Check if blob exists in local cache first
+                    if state.storage.exists(&digest).await.unwrap_or(false) {
+                        // Try to get a presigned URL
+                        match state
+                            .storage
+                            .get_presigned_url(&digest, state.blob_serving.presigned_url_ttl_secs)
+                            .await
+                        {
+                            Ok(Some(presigned_url)) => {
+                                debug!("Redirecting blob {} to presigned S3 URL", digest);
+
+                                // Validate that the presigned URL can be used as a header value
+                                // S3 presigned URLs may contain special characters that need validation
+                                let location_header = match HeaderValue::from_str(&presigned_url) {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        warn!(
+                                            "Presigned URL contains invalid header characters for {}: {}, \
+                                             falling back to streaming",
+                                            digest, e
+                                        );
+                                        // Fall through to streaming instead of panicking
+                                        let (stream, size) =
+                                            state.registry.get_blob(&name, &digest).await?;
+                                        let body = axum::body::Body::from_stream(stream);
+                                        let mut response = (StatusCode::OK, body).into_response();
+                                        let headers = response.headers_mut();
+                                        headers.insert(
+                                            header::CONTENT_TYPE,
+                                            HeaderValue::from_static("application/octet-stream"),
+                                        );
+                                        if size > 0 {
+                                            headers.insert(
+                                                header::CONTENT_LENGTH,
+                                                HeaderValue::from(size),
+                                            );
+                                        }
+                                        headers.insert(
+                                            "Docker-Content-Digest",
+                                            HeaderValue::from_str(&digest).unwrap_or_else(|_| {
+                                                HeaderValue::from_static("unknown")
+                                            }),
+                                        );
+                                        return Ok(response);
+                                    }
+                                };
+
+                                // Digest header is safe because we validated the digest format above
+                                let digest_header = HeaderValue::from_str(&digest)
+                                    .expect("Digest was validated above");
+
+                                // Return HTTP 307 Temporary Redirect with presigned URL
+                                // OCI Distribution spec allows 307 redirects for blob downloads
+                                let mut response = StatusCode::TEMPORARY_REDIRECT.into_response();
+                                let headers = response.headers_mut();
+                                headers.insert(header::LOCATION, location_header);
+                                // Docker-Content-Digest is required for redirect responses
+                                headers.insert("Docker-Content-Digest", digest_header);
+                                // Optional: Add Cache-Control to indicate this redirect is temporary
+                                headers.insert(
+                                    header::CACHE_CONTROL,
+                                    HeaderValue::from_static("no-cache"),
+                                );
+                                return Ok(response);
+                            }
+                            Ok(None) => {
+                                // Storage backend doesn't support presigned URLs
+                                // Fall through to standard streaming
+                                debug!(
+                                    "Storage backend does not support presigned URLs, \
+                                     falling back to streaming"
+                                );
+                            }
+                            Err(e) => {
+                                // Failed to generate presigned URL, fall back to streaming
+                                warn!(
+                                    "Failed to generate presigned URL for {}: {}, \
+                                     falling back to streaming",
+                                    digest, e
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Standard streaming response (fallback or when redirects disabled)
                 let (stream, size) = state.registry.get_blob(&name, &digest).await?;
 
                 // Stream the blob data to the client (bounded memory usage)

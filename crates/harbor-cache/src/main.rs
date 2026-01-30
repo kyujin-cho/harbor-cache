@@ -17,7 +17,7 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 mod config;
 
 use config::{Config, ConfigManager, UpstreamConfig};
-use harbor_api::{AppState, MetricsHandle, create_router};
+use harbor_api::{AppState, BlobServingConfig, MetricsHandle, create_router};
 use harbor_auth::JwtManager;
 use harbor_core::config::UpstreamConfigProvider;
 use harbor_core::{
@@ -292,6 +292,19 @@ async fn main() -> Result<()> {
     // Initialize JWT manager
     let jwt = Arc::new(JwtManager::new(&config.auth.jwt_secret, 24));
 
+    // Configure blob serving (presigned URL redirects) with validated TTL
+    let blob_serving = BlobServingConfig::new(
+        config.blob_serving.enable_presigned_redirects,
+        config.blob_serving.validated_ttl_secs(),
+    );
+
+    if blob_serving.enable_presigned_redirects {
+        info!(
+            "Presigned URL redirects enabled (TTL: {}s)",
+            blob_serving.presigned_url_ttl_secs
+        );
+    }
+
     // Create application state
     let state = AppState::new(
         db,
@@ -302,6 +315,7 @@ async fn main() -> Result<()> {
         config.auth.enabled,
         upstream_manager,
         config_provider,
+        blob_serving,
     );
 
     // Initialize Prometheus metrics

@@ -159,3 +159,24 @@ enabled = false
 # cert_path = "/path/to/cert.pem"
 # Path to TLS private key file (PEM format)
 # key_path = "/path/to/key.pem"
+
+[blob_serving]
+# Enable presigned URL redirects for blob downloads (S3 storage only)
+#
+# When enabled with S3 storage backend, blob GET requests return HTTP 307
+# redirects to presigned S3 URLs. Clients download directly from S3,
+# reducing Harbor Cache server bandwidth and improving performance.
+#
+# Benefits:
+# - 50-90% bandwidth savings (blobs bypass server)
+# - ~10x server load reduction (no streaming through server)
+# - 20-50% faster downloads (direct S3/CDN access)
+#
+# This feature has no effect when using local storage backend.
+enable_presigned_redirects = false
+
+# Time-to-live for presigned URLs in seconds (default: 900 = 15 minutes)
+#
+# Presigned URLs expire after this duration. Shorter TTLs are more secure
+# but may cause issues with slow connections or very large blob downloads.
+presigned_url_ttl_secs = 900

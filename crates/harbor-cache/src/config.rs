@@ -30,6 +30,8 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub tls: TlsConfig,
+    #[serde(default)]
+    pub blob_serving: BlobServingConfig,
 }
 
 /// Server configuration
@@ -243,6 +245,76 @@ pub struct TlsConfig {
     /// Path to TLS private key file (PEM format)
     #[serde(default)]
     pub key_path: Option<String>,
+}
+
+/// Minimum allowed TTL for presigned URLs (60 seconds = 1 minute)
+/// Prevents URLs that expire too quickly to be useful
+const MIN_PRESIGNED_URL_TTL_SECS: u64 = 60;
+
+/// Maximum allowed TTL for presigned URLs (86400 seconds = 24 hours)
+/// Aligns with AWS S3 maximum presigned URL validity and limits security exposure
+const MAX_PRESIGNED_URL_TTL_SECS: u64 = 86400;
+
+/// Blob serving configuration
+///
+/// Controls how blobs are served to clients, including support for
+/// presigned URL redirects for S3 storage backends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlobServingConfig {
+    /// Enable presigned URL redirects for blob downloads
+    ///
+    /// When enabled and using S3 storage, blob GET requests will return
+    /// HTTP 307 redirects to presigned S3 URLs, allowing clients to download
+    /// directly from S3. This reduces server bandwidth and improves performance.
+    ///
+    /// Requires S3 storage backend. Has no effect with local storage.
+    #[serde(default)]
+    pub enable_presigned_redirects: bool,
+
+    /// Time-to-live for presigned URLs in seconds
+    ///
+    /// Presigned URLs will be valid for this duration. Shorter TTLs are more
+    /// secure but may cause issues with slow connections or large downloads.
+    ///
+    /// Valid range: 60-86400 seconds (1 minute to 24 hours)
+    /// Default: 900 seconds (15 minutes)
+    #[serde(default = "default_presigned_url_ttl_secs")]
+    pub presigned_url_ttl_secs: u64,
+}
+
+impl BlobServingConfig {
+    /// Validate the configuration and return a validated TTL value.
+    /// Clamps TTL to valid range [60, 86400] seconds and logs a warning if adjusted.
+    pub fn validated_ttl_secs(&self) -> u64 {
+        if self.presigned_url_ttl_secs < MIN_PRESIGNED_URL_TTL_SECS {
+            warn!(
+                "presigned_url_ttl_secs {} is below minimum {}, using minimum",
+                self.presigned_url_ttl_secs, MIN_PRESIGNED_URL_TTL_SECS
+            );
+            MIN_PRESIGNED_URL_TTL_SECS
+        } else if self.presigned_url_ttl_secs > MAX_PRESIGNED_URL_TTL_SECS {
+            warn!(
+                "presigned_url_ttl_secs {} exceeds maximum {}, using maximum",
+                self.presigned_url_ttl_secs, MAX_PRESIGNED_URL_TTL_SECS
+            );
+            MAX_PRESIGNED_URL_TTL_SECS
+        } else {
+            self.presigned_url_ttl_secs
+        }
+    }
+}
+
+impl Default for BlobServingConfig {
+    fn default() -> Self {
+        Self {
+            enable_presigned_redirects: false,
+            presigned_url_ttl_secs: default_presigned_url_ttl_secs(),
+        }
+    }
+}
+
+fn default_presigned_url_ttl_secs() -> u64 {
+    900 // 15 minutes
 }
 
 // Default value functions
@@ -513,6 +585,7 @@ impl Default for Config {
             },
             logging: LoggingConfig::default(),
             tls: TlsConfig::default(),
+            blob_serving: BlobServingConfig::default(),
         }
     }
 }
