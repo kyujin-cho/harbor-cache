@@ -74,6 +74,27 @@ pub struct UpstreamRouteConfig {
     pub priority: i32,
 }
 
+/// Project configuration within an upstream
+///
+/// Allows multiple projects to be configured per upstream Harbor instance,
+/// reducing configuration duplication when accessing multiple projects
+/// from the same Harbor server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpstreamProjectConfig {
+    /// Project/registry name in Harbor (e.g., "library", "team-a")
+    pub name: String,
+    /// Pattern to match repository paths for this project (supports glob patterns)
+    /// If not specified, defaults to "{project_name}/*"
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Priority for this project route (lower = higher priority)
+    #[serde(default = "default_priority")]
+    pub priority: i32,
+    /// Whether this is the default project for this upstream
+    #[serde(default)]
+    pub is_default: bool,
+}
+
 /// New upstream Harbor configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpstreamConfig {
@@ -84,9 +105,14 @@ pub struct UpstreamConfig {
     pub display_name: Option<String>,
     /// URL of the upstream Harbor registry
     pub url: String,
-    /// Registry/project name
+    /// Registry/project name (legacy single-project mode)
+    /// Used when `projects` is empty for backward compatibility
     #[serde(default = "default_registry")]
     pub registry: String,
+    /// Multiple projects configuration (new multi-project mode)
+    /// When non-empty, takes precedence over `registry`
+    #[serde(default)]
+    pub projects: Vec<UpstreamProjectConfig>,
     /// Username for authentication
     #[serde(default)]
     pub username: Option<String>,
@@ -117,6 +143,25 @@ impl UpstreamConfig {
     /// Get the display name, falling back to name if not set
     pub fn display_name(&self) -> &str {
         self.display_name.as_deref().unwrap_or(&self.name)
+    }
+
+    /// Check if this upstream uses multi-project mode
+    pub fn uses_multi_project(&self) -> bool {
+        !self.projects.is_empty()
+    }
+
+    /// Get the default project for this upstream
+    pub fn get_default_project(&self) -> &str {
+        if self.projects.is_empty() {
+            &self.registry
+        } else {
+            self.projects
+                .iter()
+                .find(|p| p.is_default)
+                .or_else(|| self.projects.first())
+                .map(|p| p.name.as_str())
+                .unwrap_or(&self.registry)
+        }
     }
 }
 
@@ -295,6 +340,7 @@ impl Config {
                 display_name: Some("Default Upstream".to_string()),
                 url: legacy.url,
                 registry: legacy.registry,
+                projects: vec![],
                 username: legacy.username,
                 password: legacy.password,
                 skip_tls_verify: legacy.skip_tls_verify,
@@ -440,6 +486,7 @@ impl Default for Config {
                 display_name: Some("Default Upstream".to_string()),
                 url: "http://localhost:8880".to_string(),
                 registry: default_registry(),
+                projects: vec![],
                 username: Some("admin".to_string()),
                 password: Some("Harbor12345".to_string()),
                 skip_tls_verify: false,

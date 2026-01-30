@@ -107,6 +107,16 @@ fn config_to_core_upstream(config: &UpstreamConfig) -> harbor_core::UpstreamConf
         display_name: config.display_name.clone(),
         url: config.url.clone(),
         registry: config.registry.clone(),
+        projects: config
+            .projects
+            .iter()
+            .map(|p| harbor_core::UpstreamProjectConfig {
+                name: p.name.clone(),
+                pattern: p.pattern.clone(),
+                priority: p.priority,
+                is_default: p.is_default,
+            })
+            .collect(),
         username: config.username.clone(),
         password: config.password.clone(),
         skip_tls_verify: config.skip_tls_verify,
@@ -132,6 +142,16 @@ fn core_to_config_upstream(core: &harbor_core::UpstreamConfig) -> UpstreamConfig
         display_name: core.display_name.clone(),
         url: core.url.clone(),
         registry: core.registry.clone(),
+        projects: core
+            .projects
+            .iter()
+            .map(|p| config::UpstreamProjectConfig {
+                name: p.name.clone(),
+                pattern: p.pattern.clone(),
+                priority: p.priority,
+                is_default: p.is_default,
+            })
+            .collect(),
         username: core.username.clone(),
         password: core.password.clone(),
         skip_tls_verify: core.skip_tls_verify,

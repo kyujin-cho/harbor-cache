@@ -284,7 +284,24 @@ onMounted(fetchUpstreams)
             <LinkIcon class="h-4 w-4" />
             <span class="truncate">{{ upstream.url }}</span>
           </div>
-          <div class="flex items-center gap-2">
+          <div v-if="upstream.uses_multi_project" class="space-y-1">
+            <div class="flex items-center gap-2">
+              <span class="text-gray-500">Projects:</span>
+              <span class="text-xs text-blue-600 font-medium">Multi-project mode</span>
+            </div>
+            <div class="flex flex-wrap gap-1">
+              <span
+                v-for="project in upstream.projects"
+                :key="project.name"
+                class="px-1.5 py-0.5 text-xs rounded bg-gray-100 text-gray-700 font-mono"
+                :class="{ 'bg-blue-100 text-blue-700': project.is_default }"
+                :title="project.effective_pattern"
+              >
+                {{ project.name }}
+              </span>
+            </div>
+          </div>
+          <div v-else class="flex items-center gap-2">
             <span class="text-gray-500">Registry:</span>
             <span class="font-mono text-gray-700">{{ upstream.registry }}</span>
           </div>
