@@ -319,6 +319,22 @@ pub struct CreateRouteRequest {
     pub priority: i32,
 }
 
+/// Project configuration for update request
+#[derive(Deserialize, Clone)]
+pub struct UpdateUpstreamProjectRequest {
+    /// Project/registry name in Harbor
+    pub name: String,
+    /// Pattern to match repository paths for this project
+    #[serde(default)]
+    pub pattern: Option<String>,
+    /// Priority for this project route (lower = higher priority)
+    #[serde(default = "default_priority")]
+    pub priority: i32,
+    /// Whether this is the default project for this upstream
+    #[serde(default)]
+    pub is_default: bool,
+}
+
 /// Update upstream request
 #[derive(Deserialize)]
 pub struct UpdateUpstreamRequest {
@@ -342,6 +358,10 @@ pub struct UpdateUpstreamRequest {
     pub cache_isolation: Option<String>,
     #[serde(default)]
     pub is_default: Option<bool>,
+    /// Projects configuration (multi-project mode)
+    /// If provided, replaces all existing projects
+    #[serde(default)]
+    pub projects: Option<Vec<UpdateUpstreamProjectRequest>>,
 }
 
 /// Upstream health response

@@ -265,6 +265,13 @@ export interface CreateUpstreamRequest {
   routes?: { pattern: string; priority?: number }[]
 }
 
+export interface UpdateUpstreamProjectRequest {
+  name: string
+  pattern?: string | null
+  priority: number
+  is_default: boolean
+}
+
 export interface UpdateUpstreamRequest {
   display_name?: string
   url?: string
@@ -276,6 +283,7 @@ export interface UpdateUpstreamRequest {
   enabled?: boolean
   cache_isolation?: string
   is_default?: boolean
+  projects?: UpdateUpstreamProjectRequest[]
 }
 
 export interface TestUpstreamRequest {

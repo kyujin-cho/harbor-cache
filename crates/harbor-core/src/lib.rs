@@ -11,7 +11,8 @@ pub mod upstream;
 
 pub use cache::{CacheConfig, CacheManager, EvictionPolicy, spawn_cleanup_task};
 pub use config::{
-    UpstreamConfig, UpstreamConfigProvider, UpstreamProjectConfig, UpstreamRouteConfig,
+    validate_pattern, validate_project_name, UpstreamConfig, UpstreamConfigProvider,
+    UpstreamProjectConfig, UpstreamRouteConfig, MAX_PROJECTS_PER_UPSTREAM,
 };
 pub use error::CoreError;
 pub use registry::RegistryService;
