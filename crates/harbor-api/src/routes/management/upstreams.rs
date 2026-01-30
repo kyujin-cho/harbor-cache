@@ -340,6 +340,14 @@ fn validate_projects(
         }
     }
 
+    // Check for multiple default projects
+    let default_count = projects.iter().filter(|p| p.is_default).count();
+    if default_count > 1 {
+        return Err(ApiError::BadRequest(
+            "Only one project can be marked as default".to_string(),
+        ));
+    }
+
     // Validate each project
     for (idx, project) in projects.iter().enumerate() {
         // Validate project name using shared validation
