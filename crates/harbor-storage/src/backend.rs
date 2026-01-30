@@ -63,6 +63,27 @@ pub trait StorageBackend: Send + Sync {
 
     /// Cancel a chunked upload
     async fn cancel_chunked_upload(&self, session_id: &str) -> Result<(), StorageError>;
+
+    /// Get a presigned URL for downloading a blob directly from storage
+    ///
+    /// Returns `Ok(Some(url))` if the storage backend supports presigned URLs,
+    /// or `Ok(None)` if presigned URLs are not supported (e.g., local storage).
+    /// This allows clients to download blobs directly from storage without
+    /// proxying through Harbor Cache.
+    ///
+    /// # Arguments
+    /// * `digest` - The digest of the blob (e.g., "sha256:abc123...")
+    /// * `ttl_secs` - Time-to-live in seconds for the presigned URL
+    ///
+    /// # Returns
+    /// * `Ok(Some(String))` - A presigned URL valid for `ttl_secs` seconds
+    /// * `Ok(None)` - Storage backend doesn't support presigned URLs
+    /// * `Err(StorageError)` - Failed to generate presigned URL
+    async fn get_presigned_url(
+        &self,
+        digest: &str,
+        ttl_secs: u64,
+    ) -> Result<Option<String>, StorageError>;
 }
 
 /// Parse a digest string (e.g., "sha256:abc123...")

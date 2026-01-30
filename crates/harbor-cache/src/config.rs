@@ -30,6 +30,8 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub tls: TlsConfig,
+    #[serde(default)]
+    pub blob_serving: BlobServingConfig,
 }
 
 /// Server configuration
@@ -243,6 +245,44 @@ pub struct TlsConfig {
     /// Path to TLS private key file (PEM format)
     #[serde(default)]
     pub key_path: Option<String>,
+}
+
+/// Blob serving configuration
+///
+/// Controls how blobs are served to clients, including support for
+/// presigned URL redirects for S3 storage backends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlobServingConfig {
+    /// Enable presigned URL redirects for blob downloads
+    ///
+    /// When enabled and using S3 storage, blob GET requests will return
+    /// HTTP 307 redirects to presigned S3 URLs, allowing clients to download
+    /// directly from S3. This reduces server bandwidth and improves performance.
+    ///
+    /// Requires S3 storage backend. Has no effect with local storage.
+    #[serde(default)]
+    pub enable_presigned_redirects: bool,
+
+    /// Time-to-live for presigned URLs in seconds
+    ///
+    /// Presigned URLs will be valid for this duration. Shorter TTLs are more
+    /// secure but may cause issues with slow connections or large downloads.
+    /// Default: 900 seconds (15 minutes)
+    #[serde(default = "default_presigned_url_ttl_secs")]
+    pub presigned_url_ttl_secs: u64,
+}
+
+impl Default for BlobServingConfig {
+    fn default() -> Self {
+        Self {
+            enable_presigned_redirects: false,
+            presigned_url_ttl_secs: default_presigned_url_ttl_secs(),
+        }
+    }
+}
+
+fn default_presigned_url_ttl_secs() -> u64 {
+    900 // 15 minutes
 }
 
 // Default value functions
@@ -513,6 +553,7 @@ impl Default for Config {
             },
             logging: LoggingConfig::default(),
             tls: TlsConfig::default(),
+            blob_serving: BlobServingConfig::default(),
         }
     }
 }

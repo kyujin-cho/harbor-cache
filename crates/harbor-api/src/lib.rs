@@ -9,4 +9,4 @@ pub mod state;
 
 pub use error::ApiError;
 pub use routes::create_router;
-pub use state::{AppState, MetricsHandle};
+pub use state::{AppState, BlobServingConfig, MetricsHandle};

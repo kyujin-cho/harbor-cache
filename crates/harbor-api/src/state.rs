@@ -9,6 +9,24 @@ use std::sync::Arc;
 /// Type alias for the Prometheus metrics handle
 pub type MetricsHandle = metrics_exporter_prometheus::PrometheusHandle;
 
+/// Blob serving configuration for presigned URL redirects
+#[derive(Clone, Debug)]
+pub struct BlobServingConfig {
+    /// Whether presigned URL redirects are enabled
+    pub enable_presigned_redirects: bool,
+    /// TTL for presigned URLs in seconds
+    pub presigned_url_ttl_secs: u64,
+}
+
+impl Default for BlobServingConfig {
+    fn default() -> Self {
+        Self {
+            enable_presigned_redirects: false,
+            presigned_url_ttl_secs: 900, // 15 minutes
+        }
+    }
+}
+
 /// Application state shared across handlers
 #[derive(Clone)]
 pub struct AppState {
@@ -22,6 +40,8 @@ pub struct AppState {
     pub upstream_manager: Arc<UpstreamManager>,
     /// Config provider for upstream configuration (TOML-based)
     pub config_provider: Arc<dyn UpstreamConfigProvider>,
+    /// Blob serving configuration (presigned URL redirects)
+    pub blob_serving: BlobServingConfig,
 }
 
 impl AppState {
@@ -35,6 +55,7 @@ impl AppState {
         auth_enabled: bool,
         upstream_manager: Arc<UpstreamManager>,
         config_provider: Arc<dyn UpstreamConfigProvider>,
+        blob_serving: BlobServingConfig,
     ) -> Self {
         Self {
             db,
@@ -45,6 +66,7 @@ impl AppState {
             auth_enabled,
             upstream_manager,
             config_provider,
+            blob_serving,
         }
     }
 }

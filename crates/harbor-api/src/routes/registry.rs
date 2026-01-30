@@ -9,7 +9,7 @@ use axum::{
 };
 use bytes::Bytes;
 use serde::Deserialize;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -316,6 +316,65 @@ async fn handle_get_or_head_request(
                 }
             } else {
                 debug!("GET blob: {}", digest);
+
+                // Try to use presigned URL redirect if enabled and blob exists in cache
+                if state.blob_serving.enable_presigned_redirects {
+                    // Check if blob exists in local cache first
+                    if state.storage.exists(&digest).await.unwrap_or(false) {
+                        // Try to get a presigned URL
+                        match state
+                            .storage
+                            .get_presigned_url(&digest, state.blob_serving.presigned_url_ttl_secs)
+                            .await
+                        {
+                            Ok(Some(presigned_url)) => {
+                                debug!(
+                                    "Redirecting blob {} to presigned URL: {}",
+                                    digest, presigned_url
+                                );
+
+                                // Return HTTP 307 Temporary Redirect with presigned URL
+                                // OCI Distribution spec allows 307 redirects for blob downloads
+                                let mut response =
+                                    StatusCode::TEMPORARY_REDIRECT.into_response();
+                                let headers = response.headers_mut();
+                                headers.insert(
+                                    header::LOCATION,
+                                    HeaderValue::from_str(&presigned_url).unwrap(),
+                                );
+                                // Docker-Content-Digest is required for redirect responses
+                                headers.insert(
+                                    "Docker-Content-Digest",
+                                    HeaderValue::from_str(&digest).unwrap(),
+                                );
+                                // Optional: Add Cache-Control to indicate this redirect is temporary
+                                headers.insert(
+                                    header::CACHE_CONTROL,
+                                    HeaderValue::from_static("no-cache"),
+                                );
+                                return Ok(response);
+                            }
+                            Ok(None) => {
+                                // Storage backend doesn't support presigned URLs
+                                // Fall through to standard streaming
+                                debug!(
+                                    "Storage backend does not support presigned URLs, \
+                                     falling back to streaming"
+                                );
+                            }
+                            Err(e) => {
+                                // Failed to generate presigned URL, fall back to streaming
+                                warn!(
+                                    "Failed to generate presigned URL for {}: {}, \
+                                     falling back to streaming",
+                                    digest, e
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Standard streaming response (fallback or when redirects disabled)
                 let (stream, size) = state.registry.get_blob(&name, &digest).await?;
 
                 // Stream the blob data to the client (bounded memory usage)

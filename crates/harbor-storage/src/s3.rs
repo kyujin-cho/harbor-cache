@@ -7,11 +7,13 @@
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{StreamExt, TryStreamExt};
-use object_store::aws::AmazonS3Builder;
+use object_store::aws::{AmazonS3, AmazonS3Builder};
 use object_store::path::Path as ObjectPath;
+use object_store::signer::Signer;
 use object_store::{ObjectStore, PutPayload};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 use crate::backend::{ByteStream, StorageBackend, compute_sha256, parse_digest};
@@ -55,7 +57,8 @@ impl Default for S3Config {
 /// Stores blobs in an S3-compatible bucket with content-addressable paths:
 /// `<prefix>/blobs/<algorithm>/<first 2 chars>/<digest>`
 pub struct S3Storage {
-    store: Arc<dyn ObjectStore>,
+    /// The underlying S3 store (kept as concrete type for Signer trait access)
+    store: Arc<AmazonS3>,
     prefix: String,
 }
 
@@ -99,6 +102,11 @@ impl S3Storage {
             store: Arc::new(store),
             prefix,
         })
+    }
+
+    /// Get a reference to the underlying S3 store for presigned URL generation
+    pub fn signer(&self) -> &AmazonS3 {
+        &self.store
     }
 
     /// Get the object path for a blob digest
@@ -450,6 +458,32 @@ impl StorageBackend for S3Storage {
             Err(object_store::Error::NotFound { .. }) => Ok(()),
             Err(e) => Err(StorageError::S3(e.to_string())),
         }
+    }
+
+    async fn get_presigned_url(
+        &self,
+        digest: &str,
+        ttl_secs: u64,
+    ) -> Result<Option<String>, StorageError> {
+        let path = self.blob_path(digest)?;
+        debug!(
+            "Generating presigned URL for blob: {:?}, TTL: {}s",
+            path, ttl_secs
+        );
+
+        // Use the Signer trait to generate a presigned GET URL
+        let url = self
+            .store
+            .signed_url(
+                http::Method::GET,
+                &path,
+                Duration::from_secs(ttl_secs),
+            )
+            .await
+            .map_err(|e| StorageError::S3(format!("Failed to generate presigned URL: {}", e)))?;
+
+        debug!("Generated presigned URL for {}: {}", digest, url);
+        Ok(Some(url.to_string()))
     }
 }
 

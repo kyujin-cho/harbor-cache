@@ -329,4 +329,14 @@ impl StorageBackend for LocalStorage {
             Err(e) => Err(StorageError::Io(e)),
         }
     }
+
+    async fn get_presigned_url(
+        &self,
+        _digest: &str,
+        _ttl_secs: u64,
+    ) -> Result<Option<String>, StorageError> {
+        // Local storage does not support presigned URLs
+        // Return None to indicate graceful fallback to streaming
+        Ok(None)
+    }
 }

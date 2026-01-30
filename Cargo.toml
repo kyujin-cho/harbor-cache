@@ -67,6 +67,9 @@ clap = { version = "4.5", features = ["derive", "env"] }
 thiserror = "2.0"
 anyhow = "1.0"
 
+# HTTP types
+http = "1.2"
+
 # Utilities
 uuid = { version = "1.11", features = ["v4", "serde"] }
 rust-embed = { version = "8.5", features = ["interpolate-folder-path"] }
