@@ -356,13 +356,13 @@ fn validate_projects(
         }
 
         // Validate pattern if provided using shared validation
-        if let Some(ref pattern) = project.pattern {
-            if let Err(e) = validate_pattern(pattern) {
-                return Err(ApiError::BadRequest(format!(
-                    "Project '{}' pattern: {}",
-                    project.name, e
-                )));
-            }
+        if let Some(ref pattern) = project.pattern
+            && let Err(e) = validate_pattern(pattern)
+        {
+            return Err(ApiError::BadRequest(format!(
+                "Project '{}' pattern: {}",
+                project.name, e
+            )));
         }
     }
 
