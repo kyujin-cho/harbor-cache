@@ -9,7 +9,10 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, post, put},
 };
-use harbor_core::{UpstreamConfig, UpstreamRouteConfig};
+use harbor_core::{
+    MAX_PROJECTS_PER_UPSTREAM, UpstreamConfig, UpstreamProjectConfig, UpstreamRouteConfig,
+    validate_pattern, validate_project_name,
+};
 use harbor_proxy::{HarborClient, HarborClientConfig};
 use std::net::{IpAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -314,6 +317,58 @@ fn validate_route_pattern(pattern: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Validate projects array for update request
+fn validate_projects(
+    projects: &[super::types::UpdateUpstreamProjectRequest],
+) -> Result<(), ApiError> {
+    // Check project count limit
+    if projects.len() > MAX_PROJECTS_PER_UPSTREAM {
+        return Err(ApiError::BadRequest(format!(
+            "Too many projects (max {})",
+            MAX_PROJECTS_PER_UPSTREAM
+        )));
+    }
+
+    // Check for duplicate project names
+    let mut seen_names = std::collections::HashSet::new();
+    for project in projects {
+        if !seen_names.insert(&project.name) {
+            return Err(ApiError::BadRequest(format!(
+                "Duplicate project name: '{}'",
+                project.name
+            )));
+        }
+    }
+
+    // Check for multiple default projects
+    let default_count = projects.iter().filter(|p| p.is_default).count();
+    if default_count > 1 {
+        return Err(ApiError::BadRequest(
+            "Only one project can be marked as default".to_string(),
+        ));
+    }
+
+    // Validate each project
+    for (idx, project) in projects.iter().enumerate() {
+        // Validate project name using shared validation
+        if let Err(e) = validate_project_name(&project.name) {
+            return Err(ApiError::BadRequest(format!("Project #{}: {}", idx + 1, e)));
+        }
+
+        // Validate pattern if provided using shared validation
+        if let Some(ref pattern) = project.pattern
+            && let Err(e) = validate_pattern(pattern)
+        {
+            return Err(ApiError::BadRequest(format!(
+                "Project '{}' pattern: {}",
+                project.name, e
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 // ==================== Helper Functions ====================
 
 fn upstream_config_to_response(config: &UpstreamConfig, idx: usize) -> UpstreamResponse {
@@ -505,12 +560,31 @@ async fn update_upstream(
     if let Some(ref registry) = request.registry {
         validate_registry_name(registry)?;
     }
+    // Validate projects if provided
+    if let Some(ref projects) = request.projects {
+        validate_projects(projects)?;
+    }
 
     // Get existing upstream
     let existing = state
         .config_provider
         .get_upstream_by_name(&name)
         .ok_or_else(|| ApiError::NotFound(format!("Upstream: {}", name)))?;
+
+    // Convert projects from request to config format if provided
+    let projects = if let Some(ref project_requests) = request.projects {
+        project_requests
+            .iter()
+            .map(|p| UpstreamProjectConfig {
+                name: p.name.clone(),
+                pattern: p.pattern.clone(),
+                priority: p.priority,
+                is_default: p.is_default,
+            })
+            .collect()
+    } else {
+        existing.projects
+    };
 
     // Build updated config
     let updated = UpstreamConfig {
@@ -521,7 +595,7 @@ async fn update_upstream(
             .or(Some(existing.name.clone())),
         url: request.url.unwrap_or(existing.url),
         registry: request.registry.unwrap_or(existing.registry),
-        projects: existing.projects, // Projects managed via config file
+        projects,
         username: request.username.or(existing.username),
         password: request.password.or(existing.password),
         skip_tls_verify: request.skip_tls_verify.unwrap_or(existing.skip_tls_verify),
