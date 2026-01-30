@@ -131,7 +131,11 @@ impl UpstreamConfigProvider for InMemoryConfigProvider {
     }
 
     fn get_upstream_by_name(&self, name: &str) -> Option<UpstreamConfig> {
-        self.upstreams.read().iter().find(|u| u.name == name).cloned()
+        self.upstreams
+            .read()
+            .iter()
+            .find(|u| u.name == name)
+            .cloned()
     }
 
     fn get_default_upstream(&self) -> Option<UpstreamConfig> {

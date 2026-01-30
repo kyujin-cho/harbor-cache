@@ -19,8 +19,10 @@ mod config;
 use config::{Config, ConfigManager, UpstreamConfig};
 use harbor_api::{AppState, MetricsHandle, create_router};
 use harbor_auth::JwtManager;
-use harbor_core::{CacheConfig, CacheManager, RegistryService, UpstreamManager, spawn_cleanup_task};
 use harbor_core::config::UpstreamConfigProvider;
+use harbor_core::{
+    CacheConfig, CacheManager, RegistryService, UpstreamManager, spawn_cleanup_task,
+};
 use harbor_db::Database;
 use harbor_proxy::{HarborClient, HarborClientConfig};
 use harbor_storage::{LocalStorage, S3Config, S3Storage, StorageBackend};

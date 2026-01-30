@@ -231,14 +231,14 @@ impl UpstreamManager {
 
         // Fall back to default upstream
         let default_name = self.default_upstream_name.read().clone();
-        if let Some(name) = default_name {
-            if let Some(state) = upstreams.get(&name) {
-                return Some(UpstreamInfo {
-                    config: state.config.clone(),
-                    client: state.client.clone(),
-                    match_reason: MatchReason::DefaultFallback,
-                });
-            }
+        if let Some(name) = default_name
+            && let Some(state) = upstreams.get(&name)
+        {
+            return Some(UpstreamInfo {
+                config: state.config.clone(),
+                client: state.client.clone(),
+                match_reason: MatchReason::DefaultFallback,
+            });
         }
 
         // If no default, try first available healthy upstream

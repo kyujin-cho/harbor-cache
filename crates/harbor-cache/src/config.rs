@@ -286,24 +286,24 @@ impl Config {
 
     /// Migrate legacy [upstream] to [[upstreams]] format
     fn migrate_legacy_upstream(&mut self) {
-        if let Some(legacy) = self.upstream.take() {
-            if self.upstreams.is_empty() {
-                warn!("Migrating legacy [upstream] to [[upstreams]] format");
-                self.upstreams.push(UpstreamConfig {
-                    name: "default".to_string(),
-                    display_name: Some("Default Upstream".to_string()),
-                    url: legacy.url,
-                    registry: legacy.registry,
-                    username: legacy.username,
-                    password: legacy.password,
-                    skip_tls_verify: legacy.skip_tls_verify,
-                    priority: default_priority(),
-                    enabled: true,
-                    cache_isolation: default_cache_isolation(),
-                    is_default: true,
-                    routes: vec![],
-                });
-            }
+        if let Some(legacy) = self.upstream.take()
+            && self.upstreams.is_empty()
+        {
+            warn!("Migrating legacy [upstream] to [[upstreams]] format");
+            self.upstreams.push(UpstreamConfig {
+                name: "default".to_string(),
+                display_name: Some("Default Upstream".to_string()),
+                url: legacy.url,
+                registry: legacy.registry,
+                username: legacy.username,
+                password: legacy.password,
+                skip_tls_verify: legacy.skip_tls_verify,
+                priority: default_priority(),
+                enabled: true,
+                cache_isolation: default_cache_isolation(),
+                is_default: true,
+                routes: vec![],
+            });
         }
     }
 
@@ -312,8 +312,8 @@ impl Config {
     /// This uses a write-to-temp-then-rename strategy to ensure atomic updates.
     /// If the process crashes mid-write, the original file remains intact.
     pub fn save(&self, path: &str) -> Result<()> {
-        let content = toml::to_string_pretty(self)
-            .with_context(|| "Failed to serialize configuration")?;
+        let content =
+            toml::to_string_pretty(self).with_context(|| "Failed to serialize configuration")?;
 
         let path_obj = Path::new(path);
         let parent = path_obj.parent().unwrap_or(Path::new("."));
@@ -358,6 +358,7 @@ impl Config {
     }
 
     /// Get an upstream by name
+    #[allow(dead_code)]
     pub fn get_upstream_by_name(&self, name: &str) -> Option<&UpstreamConfig> {
         self.upstreams.iter().find(|u| u.name == name)
     }
@@ -475,6 +476,7 @@ pub struct ConfigManager {
     path: Arc<RwLock<String>>,
 }
 
+#[allow(dead_code)]
 impl ConfigManager {
     /// Create a new config manager
     pub fn new(config: Config, path: String) -> Self {

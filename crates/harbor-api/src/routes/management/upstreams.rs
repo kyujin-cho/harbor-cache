@@ -118,9 +118,12 @@ async fn validate_upstream_url_with_dns(url_str: &str) -> Result<(), ApiError> {
     validate_upstream_url(url_str)?;
 
     // Parse URL to get host and port
-    let url = Url::parse(url_str).map_err(|e| ApiError::BadRequest(format!("Invalid URL: {}", e)))?;
+    let url =
+        Url::parse(url_str).map_err(|e| ApiError::BadRequest(format!("Invalid URL: {}", e)))?;
 
-    let host = url.host_str().ok_or_else(|| ApiError::BadRequest("URL must have a host".to_string()))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| ApiError::BadRequest("URL must have a host".to_string()))?;
 
     // If it's already an IP, we already validated it above
     if host.parse::<IpAddr>().is_ok() {
@@ -128,12 +131,16 @@ async fn validate_upstream_url_with_dns(url_str: &str) -> Result<(), ApiError> {
     }
 
     // Resolve the hostname to IP addresses
-    let port = url.port().unwrap_or(if url.scheme() == "https" { 443 } else { 80 });
+    let port = url
+        .port()
+        .unwrap_or(if url.scheme() == "https" { 443 } else { 80 });
     let addr_str = format!("{}:{}", host, port);
 
     // Use spawn_blocking for DNS resolution to avoid blocking the async runtime
     let resolved = tokio::task::spawn_blocking(move || {
-        addr_str.to_socket_addrs().map(|addrs| addrs.collect::<Vec<_>>())
+        addr_str
+            .to_socket_addrs()
+            .map(|addrs| addrs.collect::<Vec<_>>())
     })
     .await
     .map_err(|e| ApiError::Internal(format!("DNS resolution task failed: {}", e)))?
@@ -501,9 +508,7 @@ async fn update_upstream(
         skip_tls_verify: request.skip_tls_verify.unwrap_or(existing.skip_tls_verify),
         priority: request.priority.unwrap_or(existing.priority),
         enabled: request.enabled.unwrap_or(existing.enabled),
-        cache_isolation: request
-            .cache_isolation
-            .unwrap_or(existing.cache_isolation),
+        cache_isolation: request.cache_isolation.unwrap_or(existing.cache_isolation),
         is_default: request.is_default.unwrap_or(existing.is_default),
         routes: existing.routes, // Routes managed separately
     };
@@ -523,10 +528,7 @@ async fn update_upstream(
     info!("Updated upstream: {}", name);
 
     let upstreams = state.config_provider.get_upstreams();
-    let idx = upstreams
-        .iter()
-        .position(|u| u.name == name)
-        .unwrap_or(0);
+    let idx = upstreams.iter().position(|u| u.name == name).unwrap_or(0);
 
     Ok(Json(upstream_config_to_response(&updated, idx)))
 }
@@ -541,16 +543,13 @@ async fn delete_upstream(
     debug!("Deleting upstream: {}", name);
 
     // Remove from config and save
-    state
-        .config_provider
-        .remove_upstream(&name)
-        .map_err(|e| {
-            if e.to_string().contains("not found") {
-                ApiError::NotFound(format!("Upstream: {}", name))
-            } else {
-                ApiError::Internal(e.to_string())
-            }
-        })?;
+    state.config_provider.remove_upstream(&name).map_err(|e| {
+        if e.to_string().contains("not found") {
+            ApiError::NotFound(format!("Upstream: {}", name))
+        } else {
+            ApiError::Internal(e.to_string())
+        }
+    })?;
 
     // Reload the upstream manager to pick up changes
     state

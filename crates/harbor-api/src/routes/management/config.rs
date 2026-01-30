@@ -629,7 +629,9 @@ async fn get_config_file(
 ) -> Result<Json<ConfigFileResponse>, ApiError> {
     let path = state.config_provider.get_config_path();
     if path.is_empty() {
-        return Err(ApiError::BadRequest("Config path not available".to_string()));
+        return Err(ApiError::BadRequest(
+            "Config path not available".to_string(),
+        ));
     }
 
     // Validate the path before reading
@@ -668,7 +670,9 @@ async fn update_config_file(
 
     let path = state.config_provider.get_config_path();
     if path.is_empty() {
-        return Err(ApiError::BadRequest("Config path not available".to_string()));
+        return Err(ApiError::BadRequest(
+            "Config path not available".to_string(),
+        ));
     }
 
     // Validate TOML syntax
