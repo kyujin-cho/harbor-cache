@@ -10,8 +10,8 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use harbor_core::{
-    validate_pattern, validate_project_name, UpstreamConfig, UpstreamProjectConfig,
-    UpstreamRouteConfig, MAX_PROJECTS_PER_UPSTREAM,
+    MAX_PROJECTS_PER_UPSTREAM, UpstreamConfig, UpstreamProjectConfig, UpstreamRouteConfig,
+    validate_pattern, validate_project_name,
 };
 use harbor_proxy::{HarborClient, HarborClientConfig};
 use std::net::{IpAddr, ToSocketAddrs};
