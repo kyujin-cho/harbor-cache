@@ -482,7 +482,9 @@ impl StorageBackend for S3Storage {
             .await
             .map_err(|e| StorageError::S3(format!("Failed to generate presigned URL: {}", e)))?;
 
-        debug!("Generated presigned URL for {}: {}", digest, url);
+        // Note: We intentionally do NOT log the full presigned URL as it contains
+        // sensitive signing information. Only log that a URL was generated.
+        debug!("Generated presigned URL for blob: {}", digest);
         Ok(Some(url.to_string()))
     }
 }

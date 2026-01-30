@@ -292,11 +292,11 @@ async fn main() -> Result<()> {
     // Initialize JWT manager
     let jwt = Arc::new(JwtManager::new(&config.auth.jwt_secret, 24));
 
-    // Configure blob serving (presigned URL redirects)
-    let blob_serving = BlobServingConfig {
-        enable_presigned_redirects: config.blob_serving.enable_presigned_redirects,
-        presigned_url_ttl_secs: config.blob_serving.presigned_url_ttl_secs,
-    };
+    // Configure blob serving (presigned URL redirects) with validated TTL
+    let blob_serving = BlobServingConfig::new(
+        config.blob_serving.enable_presigned_redirects,
+        config.blob_serving.validated_ttl_secs(),
+    );
 
     if blob_serving.enable_presigned_redirects {
         info!(

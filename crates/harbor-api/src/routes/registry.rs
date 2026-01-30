@@ -290,9 +290,11 @@ async fn handle_get_or_head_request(
             }
         }
         RegistryRequest::Blob { name, digest } => {
-            // Validate repository name at API boundary before logging or processing
-            // Digest validation is handled by the core layer
+            // Validate repository name and digest at API boundary before logging or processing
             validate_repository_name(&name)?;
+            // Validate digest format to prevent path traversal and ensure correctness
+            harbor_storage::backend::validate_digest(&digest)
+                .map_err(|e| ApiError::BadRequest(format!("Invalid digest: {}", e)))?;
 
             if method == axum::http::Method::HEAD {
                 debug!("HEAD blob: {}", digest);
@@ -329,24 +331,54 @@ async fn handle_get_or_head_request(
                         {
                             Ok(Some(presigned_url)) => {
                                 debug!(
-                                    "Redirecting blob {} to presigned URL: {}",
-                                    digest, presigned_url
+                                    "Redirecting blob {} to presigned S3 URL",
+                                    digest
                                 );
+
+                                // Validate that the presigned URL can be used as a header value
+                                // S3 presigned URLs may contain special characters that need validation
+                                let location_header = match HeaderValue::from_str(&presigned_url) {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        warn!(
+                                            "Presigned URL contains invalid header characters for {}: {}, \
+                                             falling back to streaming",
+                                            digest, e
+                                        );
+                                        // Fall through to streaming instead of panicking
+                                        let (stream, size) = state.registry.get_blob(&name, &digest).await?;
+                                        let body = axum::body::Body::from_stream(stream);
+                                        let mut response = (StatusCode::OK, body).into_response();
+                                        let headers = response.headers_mut();
+                                        headers.insert(
+                                            header::CONTENT_TYPE,
+                                            HeaderValue::from_static("application/octet-stream"),
+                                        );
+                                        if size > 0 {
+                                            headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size));
+                                        }
+                                        headers.insert(
+                                            "Docker-Content-Digest",
+                                            HeaderValue::from_str(&digest).unwrap_or_else(|_| {
+                                                HeaderValue::from_static("unknown")
+                                            }),
+                                        );
+                                        return Ok(response);
+                                    }
+                                };
+
+                                // Digest header is safe because we validated the digest format above
+                                let digest_header = HeaderValue::from_str(&digest)
+                                    .expect("Digest was validated above");
 
                                 // Return HTTP 307 Temporary Redirect with presigned URL
                                 // OCI Distribution spec allows 307 redirects for blob downloads
                                 let mut response =
                                     StatusCode::TEMPORARY_REDIRECT.into_response();
                                 let headers = response.headers_mut();
-                                headers.insert(
-                                    header::LOCATION,
-                                    HeaderValue::from_str(&presigned_url).unwrap(),
-                                );
+                                headers.insert(header::LOCATION, location_header);
                                 // Docker-Content-Digest is required for redirect responses
-                                headers.insert(
-                                    "Docker-Content-Digest",
-                                    HeaderValue::from_str(&digest).unwrap(),
-                                );
+                                headers.insert("Docker-Content-Digest", digest_header);
                                 // Optional: Add Cache-Control to indicate this redirect is temporary
                                 headers.insert(
                                     header::CACHE_CONTROL,
