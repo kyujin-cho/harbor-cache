@@ -30,6 +30,9 @@ RUN apt-get update && apt-get install -y \
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
+# Copy frontend static files from frontend builder (required for rust-embed at compile time)
+COPY --from=frontend-builder /build/static ./static
+
 # Build release binary
 RUN cargo build --release
 
