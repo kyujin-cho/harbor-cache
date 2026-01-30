@@ -56,10 +56,10 @@ pub fn validate_project_name(name: &str) -> Result<(), String> {
     }
 
     // Must start with alphanumeric
-    if let Some(first) = name.chars().next() {
-        if !first.is_ascii_alphanumeric() {
-            return Err("Project name must start with an alphanumeric character".to_string());
-        }
+    if let Some(first) = name.chars().next()
+        && !first.is_ascii_alphanumeric()
+    {
+        return Err("Project name must start with an alphanumeric character".to_string());
     }
 
     Ok(())
@@ -294,21 +294,18 @@ impl UpstreamConfig {
         // Validate each route
         for (idx, route) in self.routes.iter().enumerate() {
             if let Err(e) = route.validate() {
-                return Err(format!(
-                    "Upstream '{}' route #{}: {}",
-                    self.name, idx, e
-                ));
+                return Err(format!("Upstream '{}' route #{}: {}", self.name, idx, e));
             }
         }
 
         // Validate registry name if using single-project mode
-        if self.projects.is_empty() {
-            if let Err(e) = validate_project_name(&self.registry) {
-                return Err(format!(
-                    "Upstream '{}' registry name invalid: {}",
-                    self.name, e
-                ));
-            }
+        if self.projects.is_empty()
+            && let Err(e) = validate_project_name(&self.registry)
+        {
+            return Err(format!(
+                "Upstream '{}' registry name invalid: {}",
+                self.name, e
+            ));
         }
 
         Ok(())
@@ -633,7 +630,12 @@ impl UpstreamConfigProvider for InMemoryConfigProvider {
 mod tests {
     use super::*;
 
-    fn create_test_project(name: &str, pattern: Option<&str>, priority: i32, is_default: bool) -> UpstreamProjectConfig {
+    fn create_test_project(
+        name: &str,
+        pattern: Option<&str>,
+        priority: i32,
+        is_default: bool,
+    ) -> UpstreamProjectConfig {
         UpstreamProjectConfig {
             name: name.to_string(),
             pattern: pattern.map(|p| p.to_string()),
@@ -665,9 +667,8 @@ mod tests {
         let upstream_single = create_test_upstream(vec![]);
         assert!(!upstream_single.uses_multi_project());
 
-        let upstream_multi = create_test_upstream(vec![
-            create_test_project("library", None, 100, true),
-        ]);
+        let upstream_multi =
+            create_test_upstream(vec![create_test_project("library", None, 100, true)]);
         assert!(upstream_multi.uses_multi_project());
     }
 
@@ -683,7 +684,10 @@ mod tests {
             create_test_project("team-a", None, 50, false),
             create_test_project("team-b", None, 50, false),
         ]);
-        assert_eq!(upstream_multi.get_project_names(), vec!["library", "team-a", "team-b"]);
+        assert_eq!(
+            upstream_multi.get_project_names(),
+            vec!["library", "team-a", "team-b"]
+        );
     }
 
     #[test]
@@ -721,8 +725,14 @@ mod tests {
         let upstream = create_test_upstream(vec![]);
 
         // In single-project mode, always returns the registry
-        assert_eq!(upstream.find_matching_project("library/alpine"), Some("library"));
-        assert_eq!(upstream.find_matching_project("team-a/myimage"), Some("library"));
+        assert_eq!(
+            upstream.find_matching_project("library/alpine"),
+            Some("library")
+        );
+        assert_eq!(
+            upstream.find_matching_project("team-a/myimage"),
+            Some("library")
+        );
     }
 
     #[test]
@@ -734,12 +744,24 @@ mod tests {
         ]);
 
         // Matches the correct project based on path
-        assert_eq!(upstream.find_matching_project("library/alpine"), Some("library"));
-        assert_eq!(upstream.find_matching_project("team-a/myimage"), Some("team-a"));
-        assert_eq!(upstream.find_matching_project("team-b/nginx"), Some("team-b"));
+        assert_eq!(
+            upstream.find_matching_project("library/alpine"),
+            Some("library")
+        );
+        assert_eq!(
+            upstream.find_matching_project("team-a/myimage"),
+            Some("team-a")
+        );
+        assert_eq!(
+            upstream.find_matching_project("team-b/nginx"),
+            Some("team-b")
+        );
 
         // Falls back to default project for unmatched paths
-        assert_eq!(upstream.find_matching_project("unknown/image"), Some("library"));
+        assert_eq!(
+            upstream.find_matching_project("unknown/image"),
+            Some("library")
+        );
     }
 
     #[test]
@@ -751,7 +773,10 @@ mod tests {
         ]);
 
         // Higher priority (lower number) should match first
-        assert_eq!(upstream.find_matching_project("team-a/image"), Some("team-a"));
+        assert_eq!(
+            upstream.find_matching_project("team-a/image"),
+            Some("team-a")
+        );
     }
 
     #[test]
@@ -763,7 +788,10 @@ mod tests {
 
         // Test multi-segment wildcards
         assert!(matches_glob_pattern("library/**", "library/alpine"));
-        assert!(matches_glob_pattern("library/**", "library/nested/path/image"));
+        assert!(matches_glob_pattern(
+            "library/**",
+            "library/nested/path/image"
+        ));
 
         // Test exact match
         assert!(matches_glob_pattern("library/alpine", "library/alpine"));
@@ -852,7 +880,12 @@ mod tests {
     fn test_upstream_validate_too_many_projects() {
         let mut projects = Vec::new();
         for i in 0..=MAX_PROJECTS_PER_UPSTREAM {
-            projects.push(create_test_project(&format!("project{}", i), None, 100, false));
+            projects.push(create_test_project(
+                &format!("project{}", i),
+                None,
+                100,
+                false,
+            ));
         }
         let upstream = create_test_upstream(projects);
         assert!(upstream.validate().is_err());
@@ -906,6 +939,9 @@ mod tests {
     #[test]
     fn test_consecutive_wildcards_merged() {
         // ****** should be treated as single **
-        assert!(matches_glob_pattern("library/******", "library/nested/deep/path"));
+        assert!(matches_glob_pattern(
+            "library/******",
+            "library/nested/deep/path"
+        ));
     }
 }

@@ -59,7 +59,11 @@ pub enum MatchReason {
     /// Matched a specific route pattern
     RouteMatch { pattern: String, priority: i32 },
     /// Matched a project pattern in multi-project mode
-    ProjectMatch { project: String, pattern: String, priority: i32 },
+    ProjectMatch {
+        project: String,
+        pattern: String,
+        priority: i32,
+    },
     /// Used as the default fallback
     DefaultFallback,
     /// Explicitly specified by name
@@ -333,7 +337,8 @@ impl UpstreamManager {
                 .then_with(|| a.0.config.name.cmp(&b.0.config.name))
         });
 
-        if let Some((state, client, project, pattern, priority)) = upstream_matches.into_iter().next()
+        if let Some((state, client, project, pattern, priority)) =
+            upstream_matches.into_iter().next()
         {
             return Some(UpstreamInfo {
                 config: state.config.clone(),
@@ -389,21 +394,30 @@ impl UpstreamManager {
     }
 
     /// Get the appropriate client and project for a given upstream state and repository
-    fn get_client_and_project(&self, state: &UpstreamState, repository: &str) -> (Arc<HarborClient>, String) {
-        if state.config.uses_multi_project() {
-            // Try to find a matching project
-            if let Some(project) = state.config.find_matching_project(repository) {
-                if let Some(client) = state.project_clients.get(project) {
-                    return (client.clone(), project.to_string());
-                }
-            }
+    fn get_client_and_project(
+        &self,
+        state: &UpstreamState,
+        repository: &str,
+    ) -> (Arc<HarborClient>, String) {
+        if state.config.uses_multi_project()
+            && let Some(project) = state.config.find_matching_project(repository)
+            && let Some(client) = state.project_clients.get(project)
+        {
+            return (client.clone(), project.to_string());
         }
         // Fall back to default
-        (state.default_client.clone(), state.config.get_default_project().to_string())
+        (
+            state.default_client.clone(),
+            state.config.get_default_project().to_string(),
+        )
     }
 
     /// Find the matching project for a repository in multi-project mode
-    fn find_matching_project(&self, config: &UpstreamConfig, repository: &str) -> Option<(String, String, i32)> {
+    fn find_matching_project(
+        &self,
+        config: &UpstreamConfig,
+        repository: &str,
+    ) -> Option<(String, String, i32)> {
         if !config.uses_multi_project() {
             return None;
         }
@@ -438,20 +452,23 @@ impl UpstreamManager {
     }
 
     /// Get an upstream by name with a specific project
-    pub fn get_upstream_by_name_and_project(&self, name: &str, project: &str) -> Option<UpstreamInfo> {
+    pub fn get_upstream_by_name_and_project(
+        &self,
+        name: &str,
+        project: &str,
+    ) -> Option<UpstreamInfo> {
         let upstreams = self.upstreams.read();
 
         upstreams.get(name).and_then(|state| {
-            let client = state.project_clients.get(project)
-                .cloned()
-                .or_else(|| {
-                    // If project matches the default/legacy registry, use default client
-                    if project == state.config.registry || project == state.config.get_default_project() {
-                        Some(state.default_client.clone())
-                    } else {
-                        None
-                    }
-                })?;
+            let client = state.project_clients.get(project).cloned().or_else(|| {
+                // If project matches the default/legacy registry, use default client
+                if project == state.config.registry || project == state.config.get_default_project()
+                {
+                    Some(state.default_client.clone())
+                } else {
+                    None
+                }
+            })?;
 
             Some(UpstreamInfo {
                 config: state.config.clone(),

@@ -10,7 +10,9 @@ pub mod registry;
 pub mod upstream;
 
 pub use cache::{CacheConfig, CacheManager, EvictionPolicy, spawn_cleanup_task};
-pub use config::{UpstreamConfig, UpstreamConfigProvider, UpstreamProjectConfig, UpstreamRouteConfig};
+pub use config::{
+    UpstreamConfig, UpstreamConfigProvider, UpstreamProjectConfig, UpstreamRouteConfig,
+};
 pub use error::CoreError;
 pub use registry::RegistryService;
 pub use upstream::{UpstreamHealth, UpstreamInfo, UpstreamManager};

@@ -139,6 +139,7 @@ pub struct UpstreamConfig {
     pub routes: Vec<UpstreamRouteConfig>,
 }
 
+#[allow(dead_code)]
 impl UpstreamConfig {
     /// Get the display name, falling back to name if not set
     pub fn display_name(&self) -> &str {
