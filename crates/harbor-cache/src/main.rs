@@ -281,10 +281,10 @@ async fn main() -> Result<()> {
     // Spawn background cleanup task (runs every hour)
     let _cleanup_handle = spawn_cleanup_task(cache.clone(), 1);
 
-    // Initialize registry service
-    let registry = Arc::new(RegistryService::new(
+    // Initialize registry service with multi-upstream routing
+    let registry = Arc::new(RegistryService::with_upstream_manager(
         cache.clone(),
-        upstream,
+        upstream_manager.clone(),
         db.clone(),
         storage.clone(),
     ));

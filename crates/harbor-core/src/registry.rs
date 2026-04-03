@@ -1,10 +1,14 @@
 //! Registry service for OCI Distribution API operations
 
 use bytes::Bytes;
+use futures::{Stream, StreamExt};
 use harbor_db::{Database, EntryType, NewUploadSession, UploadSession};
 use harbor_proxy::HarborClient;
-use harbor_storage::StorageBackend;
+use harbor_storage::{StorageBackend, StorageError};
+use harbor_storage::backend::ByteStream;
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -79,6 +83,17 @@ fn validate_reference(reference: &str) -> Result<(), CoreError> {
 /// Supports two modes:
 /// - Single upstream mode: Uses a single HarborClient (legacy/simple mode)
 /// - Multi upstream mode: Uses UpstreamManager for route-based upstream selection
+/// Tracks an in-flight upstream upload session for tee-streaming.
+struct UpstreamUploadState {
+    upstream: Arc<HarborClient>,
+    /// Current upload location URL (may be updated by upstream after each PATCH)
+    location_url: String,
+    /// Repository name used for this upload
+    repository: String,
+    /// Whether the upstream upload has failed (subsequent chunks will be skipped)
+    failed: bool,
+}
+
 pub struct RegistryService {
     cache: Arc<CacheManager>,
     /// Single upstream client (legacy mode)
@@ -87,6 +102,9 @@ pub struct RegistryService {
     upstream_manager: Option<Arc<UpstreamManager>>,
     db: Database,
     storage: Arc<dyn StorageBackend>,
+    /// Active upstream upload sessions keyed by local session ID.
+    /// Used to tee-stream data to upstream during PATCH operations.
+    upstream_uploads: Arc<Mutex<HashMap<String, UpstreamUploadState>>>,
 }
 
 impl RegistryService {
@@ -103,6 +121,7 @@ impl RegistryService {
             upstream_manager: None,
             db,
             storage,
+            upstream_uploads: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -119,6 +138,7 @@ impl RegistryService {
             upstream_manager: Some(upstream_manager),
             db,
             storage,
+            upstream_uploads: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -277,12 +297,59 @@ impl RegistryService {
             .get_upstream(repository)
             .ok_or_else(|| CoreError::NotFound("No upstream configured".to_string()))?;
 
-        // Push to upstream first
+        // Ensure all manifest-referenced blobs exist upstream.
+        // With tee-streaming, blobs pushed in the current session are already
+        // upstream. But the manifest may reference layers from the local cache
+        // (e.g. from a prior pull) that were never pushed to this upstream.
+        if let Ok(manifest_json) = serde_json::from_slice::<serde_json::Value>(&data) {
+            let mut referenced_digests: Vec<String> = Vec::new();
+
+            if let Some(config_digest) = manifest_json
+                .get("config")
+                .and_then(|c| c.get("digest"))
+                .and_then(|d| d.as_str())
+            {
+                referenced_digests.push(config_digest.to_string());
+            }
+
+            if let Some(layers) = manifest_json.get("layers").and_then(|l| l.as_array()) {
+                for layer in layers {
+                    if let Some(d) = layer.get("digest").and_then(|d| d.as_str()) {
+                        referenced_digests.push(d.to_string());
+                    }
+                }
+            }
+
+            for blob_digest in &referenced_digests {
+                if !self.storage.exists(blob_digest).await.unwrap_or(false) {
+                    continue;
+                }
+                match upstream.blob_exists(repository, blob_digest).await {
+                    Ok(true) => continue,
+                    Ok(false) => {
+                        info!("Blob {} missing upstream, pushing before manifest", blob_digest);
+                        let size = self.storage.size(blob_digest).await?;
+                        let stream = self.storage.stream(blob_digest).await?;
+                        let proxy_stream: harbor_proxy::client::ByteStream =
+                            Box::pin(stream.map(|r| {
+                                r.map_err(|e| harbor_proxy::ProxyError::InvalidResponse(e.to_string()))
+                            }));
+                        upstream
+                            .push_blob_stream(repository, blob_digest, proxy_stream, size)
+                            .await?;
+                    }
+                    Err(e) => {
+                        warn!("Failed to check blob {} upstream: {}", blob_digest, e);
+                    }
+                }
+            }
+        }
+
+        // Push manifest to upstream
         let upstream_digest = upstream
             .push_manifest(repository, reference, data.clone(), content_type)
             .await?;
 
-        // Verify digest matches
         let final_digest = if upstream_digest.is_empty() {
             digest.clone()
         } else {
@@ -530,6 +597,33 @@ impl RegistryService {
             })
             .await?;
 
+        // Also start an upstream upload session for tee-streaming
+        if let Some(upstream) = self.get_upstream(repository) {
+            match upstream.start_upstream_upload(repository).await {
+                Ok((location_url, _)) => {
+                    debug!(
+                        "Started upstream upload session for {}: {}",
+                        session_id, location_url
+                    );
+                    self.upstream_uploads.lock().await.insert(
+                        session_id.clone(),
+                        UpstreamUploadState {
+                            upstream,
+                            location_url,
+                            repository: repository.to_string(),
+                            failed: false,
+                        },
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to start upstream upload session for {}: {} (will push later)",
+                        session_id, e
+                    );
+                }
+            }
+        }
+
         Ok(session_id)
     }
 
@@ -557,7 +651,76 @@ impl RegistryService {
         Ok(new_size as i64)
     }
 
-    /// Complete an upload session (with streaming push to upstream)
+    /// Append a stream of data to an upload session, tee-streaming each chunk
+    /// to both local storage and the upstream registry simultaneously.
+    /// This avoids buffering the entire blob before pushing upstream.
+    pub async fn append_upload_stream<S, E>(
+        &self,
+        session_id: &str,
+        stream: S,
+    ) -> Result<i64, CoreError>
+    where
+        S: Stream<Item = Result<Bytes, E>> + Send + 'static,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        Self::validate_session_id(session_id)?;
+        debug!("Appending streamed data to upload: {}", session_id);
+
+        let mut total_size: u64 = 0;
+        let has_upstream = self.upstream_uploads.lock().await.contains_key(session_id);
+
+        if has_upstream {
+            // Tee-stream: each chunk goes to local storage AND upstream PATCH
+            debug!("Tee-streaming upload {} to local + upstream", session_id);
+            futures::pin_mut!(stream);
+            while let Some(result) = stream.next().await {
+                let chunk = result
+                    .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+
+                // Write to local storage
+                let new_size = self.storage.append_chunk(session_id, chunk.clone()).await?;
+                total_size = new_size;
+
+                // PATCH to upstream (best-effort: mark failed on error, skip future chunks)
+                let mut uploads = self.upstream_uploads.lock().await;
+                if let Some(state) = uploads.get_mut(session_id) {
+                    if !state.failed {
+                        match state.upstream.patch_upstream_upload(&state.location_url, chunk).await {
+                            Ok(new_location) => {
+                                state.location_url = new_location;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "Upstream PATCH failed for session {}: {} (will fall back to full push)",
+                                    session_id, e
+                                );
+                                state.failed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // No upstream session — just stream to local storage
+            let byte_stream: ByteStream = Box::pin(stream.map(|r: Result<Bytes, E>| {
+                r.map_err(|e: E| StorageError::Io(std::io::Error::other(e.to_string())))
+            }));
+            total_size = self.storage.append_chunk_stream(session_id, byte_stream).await?;
+        }
+
+        self.db
+            .update_upload_session(session_id, total_size as i64)
+            .await?;
+
+        Ok(total_size as i64)
+    }
+
+    /// Complete an upload session.
+    ///
+    /// Finalizes local storage (digest verification + rename) and then
+    /// finalizes the upstream upload that was tee-streamed during PATCH.
+    /// If tee-streaming failed or wasn't available, falls back to a full
+    /// push from local storage.
     pub async fn complete_upload(
         &self,
         repository: &str,
@@ -586,26 +749,6 @@ impl RegistryService {
         // Get the size
         let size = self.storage.size(digest).await?;
 
-        // Get upstream
-        let upstream = self
-            .get_upstream(repository)
-            .ok_or_else(|| CoreError::NotFound("No upstream configured".to_string()))?;
-
-        // Stream the data for pushing to upstream (avoid buffering in memory)
-        let storage_stream = self.storage.stream(digest).await?;
-
-        // Convert StorageError stream to ProxyError stream for upstream
-        use futures::StreamExt;
-        let proxy_stream: harbor_proxy::client::ByteStream =
-            Box::pin(storage_stream.map(|result| {
-                result.map_err(|e| harbor_proxy::ProxyError::InvalidResponse(e.to_string()))
-            }));
-
-        // Push to upstream with streaming
-        upstream
-            .push_blob_stream(repository, digest, proxy_stream, size)
-            .await?;
-
         // Create cache entry
         self.db
             .insert_cache_entry(harbor_db::NewCacheEntry {
@@ -623,8 +766,71 @@ impl RegistryService {
         // Delete upload session
         self.db.delete_upload_session(session_id).await?;
 
-        info!("Completed upload: {} -> {}", session_id, digest);
+        // Finalize the upstream upload that was tee-streamed during PATCH
+        let upstream_state = self.upstream_uploads.lock().await.remove(session_id);
+        if let Some(state) = upstream_state {
+            if state.failed {
+                // Tee-streaming failed mid-way; fall back to full push
+                info!("Tee-stream failed for {}, falling back to full push", digest);
+                self.fallback_push_blob(repository, digest, size).await;
+            } else {
+                // Finalize the upstream upload with the digest
+                match state
+                    .upstream
+                    .finalize_upstream_upload(&state.location_url, digest)
+                    .await
+                {
+                    Ok(()) => {
+                        info!("Completed upload: {} -> {} (local + upstream tee)", session_id, digest);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Upstream finalize failed for {}: {}, falling back to full push",
+                            digest, e
+                        );
+                        self.fallback_push_blob(repository, digest, size).await;
+                    }
+                }
+            }
+        } else {
+            // No upstream session was started; push in background
+            info!("Completed upload: {} -> {} (local only)", session_id, digest);
+            self.fallback_push_blob(repository, digest, size).await;
+        }
+
         Ok(())
+    }
+
+    /// Push a blob to upstream from local storage (fallback when tee-streaming
+    /// wasn't available or failed). Runs in background to avoid blocking.
+    async fn fallback_push_blob(&self, repository: &str, digest: &str, size: u64) {
+        let Some(upstream) = self.get_upstream(repository) else {
+            return;
+        };
+        let storage = Arc::clone(&self.storage);
+        let digest_owned = digest.to_string();
+        let repository_owned = repository.to_string();
+        tokio::spawn(async move {
+            debug!("Fallback push starting for blob {} ({} bytes)", digest_owned, size);
+            let stream = match storage.stream(&digest_owned).await {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("Failed to open blob {} for fallback push: {}", digest_owned, e);
+                    return;
+                }
+            };
+            let proxy_stream: harbor_proxy::client::ByteStream =
+                Box::pin(stream.map(|r| {
+                    r.map_err(|e| harbor_proxy::ProxyError::InvalidResponse(e.to_string()))
+                }));
+            match upstream
+                .push_blob_stream(&repository_owned, &digest_owned, proxy_stream, size)
+                .await
+            {
+                Ok(()) => info!("Fallback push completed for blob {}", digest_owned),
+                Err(e) => warn!("Fallback push failed for blob {}: {}", digest_owned, e),
+            }
+        });
     }
 
     /// Cancel an upload session
@@ -633,6 +839,7 @@ impl RegistryService {
         Self::validate_session_id(session_id)?;
         debug!("Canceling upload: {}", session_id);
 
+        self.upstream_uploads.lock().await.remove(session_id);
         self.storage.cancel_chunked_upload(session_id).await?;
         self.db.delete_upload_session(session_id).await?;
 

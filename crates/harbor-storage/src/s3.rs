@@ -346,6 +346,23 @@ impl StorageBackend for S3Storage {
         Ok(path.to_string())
     }
 
+    async fn append_chunk_stream(
+        &self,
+        session_id: &str,
+        stream: ByteStream,
+    ) -> Result<u64, StorageError> {
+        // S3 does not support native append; collect stream into memory and
+        // delegate to the existing append_chunk implementation which handles
+        // the read-modify-write cycle.
+        use futures::TryStreamExt;
+        let mut buf = Vec::new();
+        let mut stream = stream;
+        while let Some(chunk) = stream.try_next().await? {
+            buf.extend_from_slice(&chunk);
+        }
+        self.append_chunk(session_id, Bytes::from(buf)).await
+    }
+
     async fn append_chunk(&self, session_id: &str, data: Bytes) -> Result<u64, StorageError> {
         let path = self.upload_path(session_id);
         debug!("Appending {} bytes to S3 upload: {:?}", data.len(), path);

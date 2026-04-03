@@ -5,7 +5,7 @@ use futures::Stream;
 use reqwest::{Client, Response, StatusCode};
 use serde::Deserialize;
 use std::pin::Pin;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::error::ProxyError;
 
@@ -47,7 +47,11 @@ impl HarborClient {
     pub fn new(config: HarborClientConfig) -> Result<Self, ProxyError> {
         let mut builder = Client::builder()
             .connect_timeout(std::time::Duration::from_secs(30))
-            .read_timeout(std::time::Duration::from_secs(60));
+            // No read_timeout — large blob uploads (multi-GB) can take minutes
+            // to stream to the upstream, during which no response bytes arrive.
+            // A 60 s read_timeout would kill every large push.  TCP keepalive
+            // detects genuinely stalled connections at the transport level.
+            .tcp_keepalive(std::time::Duration::from_secs(60));
 
         if config.skip_tls_verify {
             builder = builder.danger_accept_invalid_certs(true);
@@ -182,6 +186,7 @@ impl HarborClient {
             "HEAD" => self.client.head(url),
             "PUT" => self.client.put(url),
             "POST" => self.client.post(url),
+            "PATCH" => self.client.patch(url),
             _ => self.client.get(url),
         };
 
@@ -213,6 +218,7 @@ impl HarborClient {
                 "HEAD" => self.client.head(url),
                 "PUT" => self.client.put(url),
                 "POST" => self.client.post(url),
+                "PATCH" => self.client.patch(url),
                 _ => self.client.get(url),
             };
 
@@ -240,14 +246,16 @@ impl HarborClient {
         headers: Vec<(&str, &str)>,
         body: Option<reqwest::Body>,
     ) -> Result<Response, ProxyError> {
-        // For streaming requests, we need to handle authentication differently
-        // We'll do a HEAD request first to get the token if needed
+        // For streaming requests, we need to handle authentication differently.
+        // Use a raw (unauthenticated) HEAD probe so we can actually observe the
+        // 401 challenge from the upstream. Previously this called
+        // `authenticated_request` which handles 401 internally and returns the
+        // retried successful response — meaning `probe_response.status()` was
+        // never UNAUTHORIZED and `token` was always None.
         let head_url = url.split('?').next().unwrap_or(url);
-        let probe_response = self
-            .authenticated_request("HEAD", head_url, vec![], None)
-            .await?;
+        let probe_response = self.client.head(head_url).send().await?;
 
-        // Extract token from successful probe or try to get it from 401
+        // Extract token from the 401 challenge if present
         let token = if probe_response.status() == StatusCode::UNAUTHORIZED {
             let www_auth = probe_response
                 .headers()
@@ -640,20 +648,67 @@ impl HarborClient {
 
         debug!("Completing blob upload: {} ({} bytes)", upload_url, size);
 
-        let size_str = size.to_string();
-        let headers = vec![
-            ("Content-Type", "application/octet-stream"),
-            ("Content-Length", size_str.as_str()),
-        ];
+        // Pre-fetch a push-scoped token before streaming the body.
+        // We cannot use `authenticated_request_stream` here because a streaming
+        // body can only be consumed once — if the upstream returns 401 mid-upload
+        // (e.g. because the token had only `pull` scope) Harbor closes the
+        // connection while we are still writing, producing
+        // `hyper::Error(IncompleteMessage)`.
+        //
+        // Instead, probe `/v2/` without credentials to obtain the realm/service
+        // from the WWW-Authenticate header, then inject the explicit `pull,push`
+        // scope for this repository before fetching the token.
+        let push_token = {
+            let v2_url = format!("{}/v2/", self.config.url);
+            let probe = self.client.get(&v2_url).send().await?;
+            if probe.status() == StatusCode::UNAUTHORIZED {
+                if let Some(www_auth) = probe
+                    .headers()
+                    .get("www-authenticate")
+                    .and_then(|h| h.to_str().ok())
+                {
+                    let scope = format!("repository:{}:pull,push", full_repo);
+                    // If the challenge already carries a scope field, replace it;
+                    // otherwise append one so `fetch_token_for_scope` picks it up.
+                    let www_auth_with_push_scope = if let Some(start) = www_auth.find("scope=\"") {
+                        // Replace the existing scope="..." value with our push scope
+                        let after_open = start + 7; // length of `scope="`
+                        if let Some(end_offset) = www_auth[after_open..].find('"') {
+                            let end = after_open + end_offset;
+                            format!("{}scope=\"{}\"{}", &www_auth[..start], scope, &www_auth[end + 1..])
+                        } else {
+                            format!("{},scope=\"{}\"", www_auth, scope)
+                        }
+                    } else {
+                        format!("{},scope=\"{}\"", www_auth, scope)
+                    };
+                    Some(self.fetch_token_for_scope(&www_auth_with_push_scope).await?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
 
         // Convert ByteStream to reqwest::Body
         use futures::TryStreamExt;
         let reqwest_stream = stream.map_err(|e| std::io::Error::other(e.to_string()));
         let body = reqwest::Body::wrap_stream(reqwest_stream);
 
-        let response = self
-            .authenticated_request_stream("PUT", &upload_url, headers, Some(body))
-            .await?;
+        let size_str = size.to_string();
+        let mut put_request = self
+            .client
+            .put(&upload_url)
+            .header("Content-Type", "application/octet-stream")
+            .header("Content-Length", size_str.as_str())
+            .body(body);
+
+        if let Some(token) = push_token {
+            put_request = put_request.header("Authorization", &token);
+        }
+
+        let response = put_request.send().await?;
 
         if !response.status().is_success() && response.status() != StatusCode::CREATED {
             return Err(ProxyError::UpstreamError {
@@ -663,6 +718,122 @@ impl HarborClient {
         }
 
         debug!("Blob {} uploaded successfully", digest);
+        Ok(())
+    }
+
+    // ==================== Chunked Upload API ====================
+    // These methods mirror the OCI chunked upload protocol to upstream,
+    // enabling tee-streaming where data flows to both local storage and
+    // upstream simultaneously.
+
+    /// Start an upload session on upstream. Returns (location_url, auth_token).
+    pub async fn start_upstream_upload(
+        &self,
+        repository: &str,
+    ) -> Result<(String, Option<String>), ProxyError> {
+        let full_repo = self.full_repository(repository);
+        let url = format!("{}/v2/{}/blobs/uploads/", self.config.url, full_repo);
+
+        debug!("Starting upstream upload session: {}", url);
+
+        let response = self
+            .authenticated_request("POST", &url, vec![], None)
+            .await?;
+
+        if !response.status().is_success() && response.status() != StatusCode::ACCEPTED {
+            return Err(ProxyError::UpstreamError {
+                status: response.status().as_u16(),
+                message: response.text().await.unwrap_or_default(),
+            });
+        }
+
+        // Extract auth token from the request that succeeded (for reuse)
+        // We'll re-fetch when needed, but capture the location
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|h| h.to_str().ok())
+            .ok_or_else(|| ProxyError::InvalidResponse("Missing Location header".to_string()))?;
+
+        let location_url = if location.starts_with("http") {
+            location.to_string()
+        } else {
+            format!("{}{}", self.config.url, location)
+        };
+
+        Ok((location_url, None))
+    }
+
+    /// PATCH data to an upstream upload session. Returns the updated location URL.
+    pub async fn patch_upstream_upload(
+        &self,
+        location_url: &str,
+        data: Bytes,
+    ) -> Result<String, ProxyError> {
+        debug!(
+            "PATCHing {} bytes to upstream upload: {}",
+            data.len(),
+            location_url
+        );
+
+        let response = self
+            .authenticated_request(
+                "PATCH",
+                location_url,
+                vec![("Content-Type", "application/octet-stream")],
+                Some(data),
+            )
+            .await?;
+
+        if !response.status().is_success() && response.status() != StatusCode::ACCEPTED {
+            return Err(ProxyError::UpstreamError {
+                status: response.status().as_u16(),
+                message: response.text().await.unwrap_or_default(),
+            });
+        }
+
+        // Upstream may return an updated location
+        let new_location = response
+            .headers()
+            .get("location")
+            .and_then(|h| h.to_str().ok())
+            .map(|loc| {
+                if loc.starts_with("http") {
+                    loc.to_string()
+                } else {
+                    format!("{}{}", self.config.url, loc)
+                }
+            })
+            .unwrap_or_else(|| location_url.to_string());
+
+        Ok(new_location)
+    }
+
+    /// Finalize an upstream upload with the digest.
+    pub async fn finalize_upstream_upload(
+        &self,
+        location_url: &str,
+        digest: &str,
+    ) -> Result<(), ProxyError> {
+        let separator = if location_url.contains('?') { '&' } else { '?' };
+        let url = format!("{}{}digest={}", location_url, separator, digest);
+
+        debug!("Finalizing upstream upload: {}", url);
+
+        let response = self
+            .authenticated_request("PUT", &url, vec![], None)
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() && status != StatusCode::CREATED {
+            let message = response.text().await.unwrap_or_default();
+            warn!("Upstream upload finalize failed ({}): {}", status, message);
+            return Err(ProxyError::UpstreamError {
+                status: status.as_u16(),
+                message,
+            });
+        }
+
         Ok(())
     }
 
@@ -690,9 +861,11 @@ impl HarborClient {
         let status = response.status();
 
         if !status.is_success() && status != StatusCode::CREATED {
+            let message = response.text().await.unwrap_or_default();
+            warn!("Upstream manifest push failed ({}): {}", status, message);
             return Err(ProxyError::UpstreamError {
                 status: status.as_u16(),
-                message: response.text().await.unwrap_or_default(),
+                message,
             });
         }
 

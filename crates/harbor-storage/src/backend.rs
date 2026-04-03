@@ -54,6 +54,16 @@ pub trait StorageBackend: Send + Sync {
     /// Append data to a chunked upload
     async fn append_chunk(&self, session_id: &str, data: Bytes) -> Result<u64, StorageError>;
 
+    /// Append a stream of data to a chunked upload without buffering the entire
+    /// body in memory. This is the preferred path for large blobs received over
+    /// HTTP where buffering the whole body would either exceed available RAM or
+    /// hit framework-level body-size limits.
+    async fn append_chunk_stream(
+        &self,
+        session_id: &str,
+        stream: ByteStream,
+    ) -> Result<u64, StorageError>;
+
     /// Complete a chunked upload, verify digest, move to final location
     async fn complete_chunked_upload(
         &self,

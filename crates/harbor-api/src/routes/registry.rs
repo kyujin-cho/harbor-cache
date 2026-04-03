@@ -2,7 +2,8 @@
 
 use axum::{
     Router,
-    extract::{Path, Query, State},
+    body::Body,
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, head, patch, post, put},
@@ -183,7 +184,12 @@ pub fn routes() -> Router<AppState> {
         .route("/v2/{*path}", head(handle_get_or_head_request))
         .route("/v2/{*path}", put(handle_put_request))
         .route("/v2/{*path}", post(handle_post_request))
-        .route("/v2/{*path}", patch(handle_patch_request))
+        // Disable the global body-size limit for PATCH so large layers (> 2 GB)
+        // can be streamed directly to disk without buffering in memory.
+        .route(
+            "/v2/{*path}",
+            patch(handle_patch_request).layer(DefaultBodyLimit::disable()),
+        )
 }
 
 /// Parse a path to extract repository name and operation details
@@ -580,21 +586,35 @@ async fn handle_post_request(
 }
 
 /// Handle PATCH requests
+///
+/// The body is streamed directly to disk via `append_upload_stream` so that
+/// large layers (multi-GB) are never fully buffered in memory.  The
+/// `DefaultBodyLimit` for this route is disabled (see `routes()`).
 async fn handle_patch_request(
     State(state): State<AppState>,
     Path(path): Path<String>,
-    body: Bytes,
+    body: Body,
 ) -> Result<Response, ApiError> {
     let req = parse_registry_path(&path).ok_or_else(|| ApiError::NotFound(path.clone()))?;
 
     match req {
         RegistryRequest::Upload { name, session_id } => {
-            // Validate repository name at API boundary
-            // Session ID validation is handled by the core layer
+            // Validate repository name at API boundary.
+            // Session ID validation is handled by the core layer.
             validate_repository_name(&name)?;
 
-            debug!("PATCH upload: {} ({} bytes)", session_id, body.len());
-            let new_size = state.registry.append_upload(&session_id, body).await?;
+            debug!("PATCH upload: {} (streaming)", session_id);
+
+            // Convert the HTTP body into a data stream and pipe directly to
+            // storage without accumulating the entire payload in memory.
+            let stream = body.into_data_stream();
+            let new_size = state
+                .registry
+                .append_upload_stream(&session_id, stream)
+                .await?;
+
+            debug!("PATCH upload: {} complete ({} bytes total)", session_id, new_size);
+
             let location = format!("/v2/{}/blobs/uploads/{}", name, session_id);
             let range = format!("0-{}", new_size - 1);
             let mut response = StatusCode::ACCEPTED.into_response();

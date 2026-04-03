@@ -6,7 +6,8 @@ use futures::StreamExt;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::fs::{self, File};
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{self, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio_util::io::StreamReader;
 use tracing::{debug, info};
 
 use crate::backend::{ByteStream, StorageBackend, compute_sha256, parse_digest};
@@ -260,6 +261,38 @@ impl StorageBackend for LocalStorage {
         file.flush().await?;
 
         // Return new total size
+        let metadata = fs::metadata(&path).await?;
+        Ok(metadata.len())
+    }
+
+    async fn append_chunk_stream(
+        &self,
+        session_id: &str,
+        stream: ByteStream,
+    ) -> Result<u64, StorageError> {
+        let path = self.upload_path(session_id);
+        debug!("Appending streamed data to upload {:?}", path);
+
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .await
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    StorageError::NotFound(format!("Upload session: {}", session_id))
+                } else {
+                    StorageError::Io(e)
+                }
+            })?;
+
+        // Convert ByteStream (Stream<Item=Result<Bytes, StorageError>>) into
+        // an AsyncRead so we can use tokio::io::copy for zero-copy streaming.
+        let mapped = stream.map(|r| r.map_err(io::Error::other));
+        let mut reader = StreamReader::new(mapped);
+
+        io::copy(&mut reader, &mut file).await?;
+        file.flush().await?;
+
         let metadata = fs::metadata(&path).await?;
         Ok(metadata.len())
     }

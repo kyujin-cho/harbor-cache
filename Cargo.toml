@@ -69,6 +69,7 @@ anyhow = "1.0"
 
 # HTTP types
 http = "1.2"
+http-body-util = "0.1"
 
 # Utilities
 uuid = { version = "1.11", features = ["v4", "serde"] }

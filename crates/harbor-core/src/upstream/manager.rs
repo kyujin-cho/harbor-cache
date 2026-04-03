@@ -352,6 +352,39 @@ impl UpstreamManager {
             });
         }
 
+        // Third, try matching by registry name prefix.
+        // If the repository starts with an upstream's registry name (e.g.
+        // "vaniladocker/foo" matches upstream with registry "vaniladocker"),
+        // route to that upstream.
+        {
+            let mut registry_matches: Vec<_> = upstreams
+                .values()
+                .filter(|state| state.health.healthy || state.health.consecutive_failures < 3)
+                .filter(|state| {
+                    let reg = &state.config.registry;
+                    repository == reg.as_str()
+                        || repository.starts_with(&format!("{}/", reg))
+                })
+                .collect();
+
+            registry_matches.sort_by(|a, b| {
+                // Prefer longer registry name match (more specific)
+                b.config.registry.len().cmp(&a.config.registry.len())
+                    .then_with(|| a.config.priority.cmp(&b.config.priority))
+                    .then_with(|| a.config.name.cmp(&b.config.name))
+            });
+
+            if let Some(state) = registry_matches.first() {
+                let (client, project) = self.get_client_and_project(state, repository);
+                return Some(UpstreamInfo {
+                    config: state.config.clone(),
+                    client,
+                    match_reason: MatchReason::DefaultFallback,
+                    project,
+                });
+            }
+        }
+
         // Fall back to default upstream
         let default_name = self.default_upstream_name.read().clone();
         if let Some(name) = default_name
