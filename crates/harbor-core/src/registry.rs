@@ -669,9 +669,16 @@ impl RegistryService {
         let mut total_size: u64 = 0;
         let has_upstream = self.upstream_uploads.lock().await.contains_key(session_id);
 
+        // Batch size for upstream PATCHes — accumulate chunks before sending
+        // to amortize HTTP + auth overhead per request.
+        const UPSTREAM_BATCH_SIZE: usize = 5 * 1024 * 1024; // 5 MB
+
         if has_upstream {
             // Tee-stream: each chunk goes to local storage AND upstream PATCH
             debug!("Tee-streaming upload {} to local + upstream", session_id);
+            let mut upstream_buf = Vec::new();
+            let mut upstream_failed = false;
+
             futures::pin_mut!(stream);
             while let Some(result) = stream.next().await {
                 let chunk = result
@@ -681,24 +688,20 @@ impl RegistryService {
                 let new_size = self.storage.append_chunk(session_id, chunk.clone()).await?;
                 total_size = new_size;
 
-                // PATCH to upstream (best-effort: mark failed on error, skip future chunks)
-                let mut uploads = self.upstream_uploads.lock().await;
-                if let Some(state) = uploads.get_mut(session_id) {
-                    if !state.failed {
-                        match state.upstream.patch_upstream_upload(&state.location_url, chunk).await {
-                            Ok(new_location) => {
-                                state.location_url = new_location;
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "Upstream PATCH failed for session {}: {} (will fall back to full push)",
-                                    session_id, e
-                                );
-                                state.failed = true;
-                            }
-                        }
+                // Accumulate for upstream batch
+                if !upstream_failed {
+                    upstream_buf.extend_from_slice(&chunk);
+                    if upstream_buf.len() >= UPSTREAM_BATCH_SIZE {
+                        let batch = Bytes::from(std::mem::take(&mut upstream_buf));
+                        upstream_failed = !self.patch_upstream_batch(session_id, batch).await;
                     }
                 }
+            }
+
+            // Flush remaining buffered data
+            if !upstream_failed && !upstream_buf.is_empty() {
+                let batch = Bytes::from(upstream_buf);
+                self.patch_upstream_batch(session_id, batch).await;
             }
         } else {
             // No upstream session — just stream to local storage
@@ -799,6 +802,44 @@ impl RegistryService {
         }
 
         Ok(())
+    }
+
+    /// PATCH a batch of data to the upstream upload session.
+    /// Takes the mutex briefly to extract state, releases it during the
+    /// network call, then re-acquires to update. Returns true on success.
+    async fn patch_upstream_batch(&self, session_id: &str, data: Bytes) -> bool {
+        // Extract what we need under lock, then release
+        let (upstream, location_url) = {
+            let uploads = self.upstream_uploads.lock().await;
+            match uploads.get(session_id) {
+                Some(state) if !state.failed => {
+                    (state.upstream.clone(), state.location_url.clone())
+                }
+                _ => return false,
+            }
+        };
+
+        // Network call without holding the mutex
+        match upstream.patch_upstream_upload(&location_url, data).await {
+            Ok(new_location) => {
+                let mut uploads = self.upstream_uploads.lock().await;
+                if let Some(state) = uploads.get_mut(session_id) {
+                    state.location_url = new_location;
+                }
+                true
+            }
+            Err(e) => {
+                warn!(
+                    "Upstream PATCH failed for session {}: {} (will fall back to full push)",
+                    session_id, e
+                );
+                let mut uploads = self.upstream_uploads.lock().await;
+                if let Some(state) = uploads.get_mut(session_id) {
+                    state.failed = true;
+                }
+                false
+            }
+        }
     }
 
     /// Push a blob to upstream from local storage (fallback when tee-streaming
