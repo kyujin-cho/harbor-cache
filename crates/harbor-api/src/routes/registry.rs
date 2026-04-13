@@ -613,7 +613,10 @@ async fn handle_patch_request(
                 .append_upload_stream(&session_id, stream)
                 .await?;
 
-            debug!("PATCH upload: {} complete ({} bytes total)", session_id, new_size);
+            debug!(
+                "PATCH upload: {} complete ({} bytes total)",
+                session_id, new_size
+            );
 
             let location = format!("/v2/{}/blobs/uploads/{}", name, session_id);
             let range = format!("0-{}", new_size - 1);

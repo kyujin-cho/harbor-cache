@@ -257,7 +257,7 @@ async fn main() -> Result<()> {
         .get_default_upstream()
         .ok_or_else(|| anyhow::anyhow!("No default upstream configured"))?;
 
-    let upstream = Arc::new(HarborClient::new(HarborClientConfig {
+    let _upstream = Arc::new(HarborClient::new(HarborClientConfig {
         url: default_upstream.url.clone(),
         registry: default_upstream.registry.clone(),
         username: default_upstream.username.clone(),

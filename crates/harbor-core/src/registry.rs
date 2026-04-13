@@ -4,8 +4,8 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use harbor_db::{Database, EntryType, NewUploadSession, UploadSession};
 use harbor_proxy::HarborClient;
-use harbor_storage::{StorageBackend, StorageError};
 use harbor_storage::backend::ByteStream;
+use harbor_storage::{StorageBackend, StorageError};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -83,13 +83,12 @@ fn validate_reference(reference: &str) -> Result<(), CoreError> {
 /// Supports two modes:
 /// - Single upstream mode: Uses a single HarborClient (legacy/simple mode)
 /// - Multi upstream mode: Uses UpstreamManager for route-based upstream selection
+///
 /// Tracks an in-flight upstream upload session for tee-streaming.
 struct UpstreamUploadState {
     upstream: Arc<HarborClient>,
     /// Current upload location URL (may be updated by upstream after each PATCH)
     location_url: String,
-    /// Repository name used for this upload
-    repository: String,
     /// Whether the upstream upload has failed (subsequent chunks will be skipped)
     failed: bool,
 }
@@ -327,12 +326,17 @@ impl RegistryService {
                 match upstream.blob_exists(repository, blob_digest).await {
                     Ok(true) => continue,
                     Ok(false) => {
-                        info!("Blob {} missing upstream, pushing before manifest", blob_digest);
+                        info!(
+                            "Blob {} missing upstream, pushing before manifest",
+                            blob_digest
+                        );
                         let size = self.storage.size(blob_digest).await?;
                         let stream = self.storage.stream(blob_digest).await?;
                         let proxy_stream: harbor_proxy::client::ByteStream =
                             Box::pin(stream.map(|r| {
-                                r.map_err(|e| harbor_proxy::ProxyError::InvalidResponse(e.to_string()))
+                                r.map_err(|e| {
+                                    harbor_proxy::ProxyError::InvalidResponse(e.to_string())
+                                })
                             }));
                         upstream
                             .push_blob_stream(repository, blob_digest, proxy_stream, size)
@@ -610,7 +614,6 @@ impl RegistryService {
                         UpstreamUploadState {
                             upstream,
                             location_url,
-                            repository: repository.to_string(),
                             failed: false,
                         },
                     );
@@ -681,8 +684,8 @@ impl RegistryService {
 
             futures::pin_mut!(stream);
             while let Some(result) = stream.next().await {
-                let chunk = result
-                    .map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
+                let chunk =
+                    result.map_err(|e| StorageError::Io(std::io::Error::other(e.to_string())))?;
 
                 // Write to local storage
                 let new_size = self.storage.append_chunk(session_id, chunk.clone()).await?;
@@ -708,7 +711,10 @@ impl RegistryService {
             let byte_stream: ByteStream = Box::pin(stream.map(|r: Result<Bytes, E>| {
                 r.map_err(|e: E| StorageError::Io(std::io::Error::other(e.to_string())))
             }));
-            total_size = self.storage.append_chunk_stream(session_id, byte_stream).await?;
+            total_size = self
+                .storage
+                .append_chunk_stream(session_id, byte_stream)
+                .await?;
         }
 
         self.db
@@ -774,7 +780,10 @@ impl RegistryService {
         if let Some(state) = upstream_state {
             if state.failed {
                 // Tee-streaming failed mid-way; fall back to full push
-                info!("Tee-stream failed for {}, falling back to full push", digest);
+                info!(
+                    "Tee-stream failed for {}, falling back to full push",
+                    digest
+                );
                 self.fallback_push_blob(repository, digest, size).await;
             } else {
                 // Finalize the upstream upload with the digest
@@ -784,7 +793,10 @@ impl RegistryService {
                     .await
                 {
                     Ok(()) => {
-                        info!("Completed upload: {} -> {} (local + upstream tee)", session_id, digest);
+                        info!(
+                            "Completed upload: {} -> {} (local + upstream tee)",
+                            session_id, digest
+                        );
                     }
                     Err(e) => {
                         warn!(
@@ -797,7 +809,10 @@ impl RegistryService {
             }
         } else {
             // No upstream session was started; push in background
-            info!("Completed upload: {} -> {} (local only)", session_id, digest);
+            info!(
+                "Completed upload: {} -> {} (local only)",
+                session_id, digest
+            );
             self.fallback_push_blob(repository, digest, size).await;
         }
 
@@ -852,11 +867,17 @@ impl RegistryService {
         let digest_owned = digest.to_string();
         let repository_owned = repository.to_string();
         tokio::spawn(async move {
-            debug!("Fallback push starting for blob {} ({} bytes)", digest_owned, size);
+            debug!(
+                "Fallback push starting for blob {} ({} bytes)",
+                digest_owned, size
+            );
             let stream = match storage.stream(&digest_owned).await {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!("Failed to open blob {} for fallback push: {}", digest_owned, e);
+                    warn!(
+                        "Failed to open blob {} for fallback push: {}",
+                        digest_owned, e
+                    );
                     return;
                 }
             };

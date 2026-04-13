@@ -362,14 +362,16 @@ impl UpstreamManager {
                 .filter(|state| state.health.healthy || state.health.consecutive_failures < 3)
                 .filter(|state| {
                     let reg = &state.config.registry;
-                    repository == reg.as_str()
-                        || repository.starts_with(&format!("{}/", reg))
+                    repository == reg.as_str() || repository.starts_with(&format!("{}/", reg))
                 })
                 .collect();
 
             registry_matches.sort_by(|a, b| {
                 // Prefer longer registry name match (more specific)
-                b.config.registry.len().cmp(&a.config.registry.len())
+                b.config
+                    .registry
+                    .len()
+                    .cmp(&a.config.registry.len())
                     .then_with(|| a.config.priority.cmp(&b.config.priority))
                     .then_with(|| a.config.name.cmp(&b.config.name))
             });

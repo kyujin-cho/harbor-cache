@@ -238,60 +238,6 @@ impl HarborClient {
         Ok(response)
     }
 
-    /// Make an authenticated request with streaming body, handling 401 by getting a properly scoped token
-    async fn authenticated_request_stream(
-        &self,
-        method: &str,
-        url: &str,
-        headers: Vec<(&str, &str)>,
-        body: Option<reqwest::Body>,
-    ) -> Result<Response, ProxyError> {
-        // For streaming requests, we need to handle authentication differently.
-        // Use a raw (unauthenticated) HEAD probe so we can actually observe the
-        // 401 challenge from the upstream. Previously this called
-        // `authenticated_request` which handles 401 internally and returns the
-        // retried successful response — meaning `probe_response.status()` was
-        // never UNAUTHORIZED and `token` was always None.
-        let head_url = url.split('?').next().unwrap_or(url);
-        let probe_response = self.client.head(head_url).send().await?;
-
-        // Extract token from the 401 challenge if present
-        let token = if probe_response.status() == StatusCode::UNAUTHORIZED {
-            let www_auth = probe_response
-                .headers()
-                .get("www-authenticate")
-                .and_then(|h| h.to_str().ok())
-                .ok_or(ProxyError::Unauthorized)?;
-
-            Some(self.fetch_token_for_scope(www_auth).await?)
-        } else {
-            None
-        };
-
-        // Build the actual streaming request
-        let mut request = match method {
-            "GET" => self.client.get(url),
-            "HEAD" => self.client.head(url),
-            "PUT" => self.client.put(url),
-            "POST" => self.client.post(url),
-            _ => self.client.get(url),
-        };
-
-        if let Some(token) = token {
-            request = request.header("Authorization", &token);
-        }
-
-        for (key, value) in &headers {
-            request = request.header(*key, *value);
-        }
-
-        if let Some(data) = body {
-            request = request.body(data);
-        }
-
-        Ok(request.send().await?)
-    }
-
     /// Check if upstream is reachable
     pub async fn ping(&self) -> Result<bool, ProxyError> {
         let url = format!("{}/v2/", self.config.url);
@@ -649,10 +595,9 @@ impl HarborClient {
         debug!("Completing blob upload: {} ({} bytes)", upload_url, size);
 
         // Pre-fetch a push-scoped token before streaming the body.
-        // We cannot use `authenticated_request_stream` here because a streaming
-        // body can only be consumed once — if the upstream returns 401 mid-upload
-        // (e.g. because the token had only `pull` scope) Harbor closes the
-        // connection while we are still writing, producing
+        // A streaming body can only be consumed once — if the upstream returns
+        // 401 mid-upload (e.g. because the token had only `pull` scope) Harbor
+        // closes the connection while we are still writing, producing
         // `hyper::Error(IncompleteMessage)`.
         //
         // Instead, probe `/v2/` without credentials to obtain the realm/service
@@ -675,14 +620,22 @@ impl HarborClient {
                         let after_open = start + 7; // length of `scope="`
                         if let Some(end_offset) = www_auth[after_open..].find('"') {
                             let end = after_open + end_offset;
-                            format!("{}scope=\"{}\"{}", &www_auth[..start], scope, &www_auth[end + 1..])
+                            format!(
+                                "{}scope=\"{}\"{}",
+                                &www_auth[..start],
+                                scope,
+                                &www_auth[end + 1..]
+                            )
                         } else {
                             format!("{},scope=\"{}\"", www_auth, scope)
                         }
                     } else {
                         format!("{},scope=\"{}\"", www_auth, scope)
                     };
-                    Some(self.fetch_token_for_scope(&www_auth_with_push_scope).await?)
+                    Some(
+                        self.fetch_token_for_scope(&www_auth_with_push_scope)
+                            .await?,
+                    )
                 } else {
                     None
                 }
