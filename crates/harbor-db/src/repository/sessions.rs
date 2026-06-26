@@ -1,6 +1,6 @@
 //! Upload session operations
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::error::DbError;
 use crate::models::{NewUploadSession, UploadSession};
@@ -86,5 +86,33 @@ impl Database {
             .execute(&self.pool)
             .await?;
         Ok(result.rows_affected() > 0)
+    }
+
+    /// List upload sessions whose `last_chunk_at` is older than `cutoff`.
+    ///
+    /// Used by maintenance to find abandoned uploads — sessions that started
+    /// (or last received a chunk) before `cutoff` and have not progressed
+    /// since, indicating the client disconnected without issuing a finalize
+    /// (PUT) or an explicit cancel (DELETE). Without this reaping, the temp
+    /// blob on disk and the row stay forever.
+    pub async fn get_abandoned_upload_sessions(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<Vec<UploadSession>, DbError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, repository, started_at, last_chunk_at, bytes_received, temp_path
+            FROM upload_sessions
+            WHERE last_chunk_at < ?
+            ORDER BY last_chunk_at ASC
+            "#,
+        )
+        .bind(cutoff.to_rfc3339())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter()
+            .map(|row| UploadSession::try_from(row).map_err(DbError::from))
+            .collect()
     }
 }
