@@ -21,6 +21,14 @@ pub struct CacheConfig {
     pub retention_days: u32,
     /// Eviction policy
     pub eviction_policy: EvictionPolicy,
+    /// How long an upload session may sit without a new chunk before
+    /// scheduled maintenance treats it as abandoned and reaps both the
+    /// `upload_sessions` row and the temp blob on disk.
+    ///
+    /// Required because clients that disconnect mid-PATCH never call the
+    /// explicit DELETE that invokes `cancel_upload`, so without a
+    /// timeout-based sweep the partial blob persists indefinitely.
+    pub abandoned_upload_retention_hours: u32,
 }
 
 impl Default for CacheConfig {
@@ -29,6 +37,7 @@ impl Default for CacheConfig {
             max_size: 10 * 1024 * 1024 * 1024, // 10 GB
             retention_days: 30,
             eviction_policy: EvictionPolicy::Lru,
+            abandoned_upload_retention_hours: 24,
         }
     }
 }
@@ -523,6 +532,67 @@ impl CacheManager {
         stats.miss_count += 1;
     }
 
+    /// Reap upload sessions that stalled past `abandoned_upload_retention_hours`.
+    ///
+    /// OCI registry clients that disconnect mid-PATCH (network loss, OOM,
+    /// process exit) never issue the explicit DELETE that invokes
+    /// `RegistryService::cancel_upload`, so the partial blob in
+    /// `<storage>/uploads/<session_id>` and the `upload_sessions` row both
+    /// stick around forever. This sweep finds sessions whose `last_chunk_at`
+    /// is older than the configured threshold and deletes both sides via the
+    /// same storage hook that `cancel_upload` uses (`cancel_chunked_upload`),
+    /// so the cleanup path stays consistent regardless of which side
+    /// initiated it.
+    ///
+    /// Returns `(sessions_removed, bytes_freed)` — `bytes_freed` is the sum
+    /// of `bytes_received` for the reaped sessions, an upper bound on the
+    /// actual disk reclaimed.
+    pub async fn cleanup_abandoned_uploads(&self) -> Result<(u64, u64), CoreError> {
+        let cutoff = Utc::now()
+            - Duration::hours(self.config.abandoned_upload_retention_hours as i64);
+        info!(
+            "Cleaning up upload sessions abandoned before {}",
+            cutoff.to_rfc3339()
+        );
+
+        let sessions = self.db.get_abandoned_upload_sessions(cutoff).await?;
+        let mut count = 0u64;
+        let mut freed = 0u64;
+
+        for session in sessions {
+            debug!(
+                "Reaping abandoned upload {} (repo={}, last_chunk_at={}, bytes={})",
+                session.id,
+                session.repository,
+                session.last_chunk_at.to_rfc3339(),
+                session.bytes_received
+            );
+
+            if let Err(e) = self.storage.cancel_chunked_upload(&session.id).await {
+                warn!(
+                    "Failed to remove storage for abandoned upload {}: {}",
+                    session.id, e
+                );
+            }
+            match self.db.delete_upload_session(&session.id).await {
+                Ok(_) => {
+                    count += 1;
+                    freed += session.bytes_received as u64;
+                }
+                Err(e) => warn!(
+                    "Failed to delete db row for abandoned upload {}: {}",
+                    session.id, e
+                ),
+            }
+        }
+
+        info!(
+            "Cleaned up {} abandoned upload sessions, freed ~{} bytes",
+            count, freed
+        );
+        Ok((count, freed))
+    }
+
     /// Run size enforcement to ensure cache is within limits
     pub async fn enforce_size_limit(&self) -> Result<u64, CoreError> {
         let current_size = self.db.get_total_cache_size().await? as u64;
@@ -541,8 +611,11 @@ impl CacheManager {
         Ok(to_free)
     }
 
-    /// Run full maintenance: cleanup expired entries and enforce size limits
-    pub async fn run_maintenance(&self) -> Result<(u64, u64), CoreError> {
+    /// Run full maintenance: cleanup expired entries, enforce size limits, reap abandoned uploads.
+    ///
+    /// Returns `(expired_entries, bytes_freed_by_size_enforcement,
+    /// abandoned_sessions, bytes_freed_by_abandoned_cleanup)`.
+    pub async fn run_maintenance(&self) -> Result<(u64, u64, u64, u64), CoreError> {
         info!("Running cache maintenance");
 
         // First, clean up expired entries
@@ -551,12 +624,16 @@ impl CacheManager {
         // Then, enforce size limits
         let freed = self.enforce_size_limit().await?;
 
+        // Finally, reap abandoned upload sessions (clients that disconnected mid-PATCH).
+        let (abandoned, abandoned_bytes) = self.cleanup_abandoned_uploads().await?;
+
         info!(
-            "Maintenance complete: {} expired entries removed, {} bytes freed",
-            expired, freed
+            "Maintenance complete: {} expired entries removed, {} bytes freed; \
+             {} abandoned upload sessions reaped, ~{} bytes freed",
+            expired, freed, abandoned, abandoned_bytes
         );
 
-        Ok((expired, freed))
+        Ok((expired, freed, abandoned, abandoned_bytes))
     }
 }
 
@@ -583,11 +660,12 @@ pub fn spawn_cleanup_task(
             info!("Running scheduled cache maintenance");
 
             match cache.run_maintenance().await {
-                Ok((expired, freed)) => {
-                    if expired > 0 || freed > 0 {
+                Ok((expired, freed, abandoned, abandoned_bytes)) => {
+                    if expired > 0 || freed > 0 || abandoned > 0 {
                         info!(
-                            "Scheduled maintenance: {} expired removed, {} bytes freed",
-                            expired, freed
+                            "Scheduled maintenance: {} expired removed, {} bytes freed; \
+                             {} abandoned uploads reaped, ~{} bytes freed",
+                            expired, freed, abandoned, abandoned_bytes
                         );
                     }
                 }

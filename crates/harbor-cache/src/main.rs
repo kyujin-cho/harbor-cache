@@ -275,6 +275,7 @@ async fn main() -> Result<()> {
         max_size: config.cache.max_size,
         retention_days: config.cache.retention_days,
         eviction_policy: config.cache.eviction_policy.parse().unwrap_or_default(),
+        abandoned_upload_retention_hours: config.cache.abandoned_upload_retention_hours,
     };
     let cache = Arc::new(CacheManager::new(db.clone(), storage.clone(), cache_config));
 

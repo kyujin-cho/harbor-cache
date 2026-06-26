@@ -52,6 +52,13 @@ pub struct CacheConfig {
     pub retention_days: u32,
     #[serde(default = "default_eviction_policy")]
     pub eviction_policy: String,
+    /// How long (in hours) an upload session may sit without a new chunk
+    /// before scheduled maintenance treats it as abandoned and reaps both
+    /// the `upload_sessions` row and the temp blob on disk. Required
+    /// because clients that disconnect mid-PATCH never call the explicit
+    /// DELETE that invokes `cancel_upload`.
+    #[serde(default = "default_abandoned_upload_retention_hours")]
+    pub abandoned_upload_retention_hours: u32,
 }
 
 /// Legacy upstream Harbor configuration (for backwards compatibility)
@@ -338,6 +345,13 @@ fn default_eviction_policy() -> String {
     "lru".to_string()
 }
 
+fn default_abandoned_upload_retention_hours() -> u32 {
+    // Defaults to 24h — long enough that interrupted-but-resuming clients
+    // are not punished, short enough that orphan partial blobs do not
+    // accumulate for months.
+    24
+}
+
 fn default_registry() -> String {
     "library".to_string()
 }
@@ -552,6 +566,7 @@ impl Default for Config {
                 max_size: default_max_size(),
                 retention_days: default_retention_days(),
                 eviction_policy: default_eviction_policy(),
+                abandoned_upload_retention_hours: default_abandoned_upload_retention_hours(),
             },
             upstream: None,
             upstreams: vec![UpstreamConfig {
